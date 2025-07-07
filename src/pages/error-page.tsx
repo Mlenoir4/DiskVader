@@ -2,10 +2,12 @@ import { AlertTriangle, XCircle, Download, RotateCcw, Folder, Home, CheckCircle 
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { useLocation } from "wouter";
+import { useToast } from "../components/ui/toast-provider";
 import { mockErrorData } from "../lib/mock-data";
 
 const ErrorPage = () => {
   const [, setLocation] = useLocation();
+  const { addToast } = useToast();
 
   const formatSize = (bytes: number) => {
     if (bytes >= 1073741824) {
@@ -30,15 +32,30 @@ const ErrorPage = () => {
   };
 
   const handleExportLogs = () => {
-    // Simulate log export
-    const logContent = mockErrorData.errorLogs.join('\n');
-    const blob = new Blob([logContent], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'disk-analyzer-error-logs.txt';
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      // Simulate log export
+      const logContent = mockErrorData.errorLogs.join('\n');
+      const blob = new Blob([logContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'disk-analyzer-error-logs.txt';
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      addToast({
+        type: 'success',
+        title: 'Logs Exported',
+        message: 'Error logs have been exported successfully.'
+      });
+    } catch (error) {
+      console.error('Error exporting logs:', error);
+      addToast({
+        type: 'error',
+        title: 'Export Failed',
+        message: 'Failed to export error logs.'
+      });
+    }
   };
 
   return (
@@ -169,14 +186,6 @@ const ErrorPage = () => {
         >
           <RotateCcw className="w-4 h-4 mr-2" />
           Retry Scan
-        </Button>
-        <Button
-          onClick={handleChooseFolder}
-          variant="outline"
-          className="bg-gray-100 text-gray-700 hover:bg-gray-200"
-        >
-          <Folder className="w-4 h-4 mr-2" />
-          Choose Different Folder
         </Button>
         <Button
           onClick={handleBackToHome}

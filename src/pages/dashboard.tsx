@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { Search, Folder, ChartPie, BarChart3, Fan, HardDrive, Database, FileText } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
+import { useToast } from "../components/ui/toast-provider";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -13,6 +14,7 @@ const Dashboard = () => {
     filesAnalyzed: 0,
     totalSize: 0
   });
+  const { addToast } = useToast();
 
   useEffect(() => {
     const unlisten = listen('scan_progress', (event) => {
@@ -24,21 +26,51 @@ const Dashboard = () => {
   }, []);
 
   const handleScanEntireDisk = async () => {
-    setIsScanning(true);
-    setScanStatus({ filesAnalyzed: 0, totalSize: 0 });
-    await invoke("start_scan", { path: "/" });
-    setIsScanning(false);
-    setLocation("/scan-results");
+    try {
+      setIsScanning(true);
+      setScanStatus({ filesAnalyzed: 0, totalSize: 0 });
+      await invoke("start_scan", { path: "/" });
+      setIsScanning(false);
+      setLocation("/scan-results");
+      addToast({
+        type: 'success',
+        title: 'Scan Completed',
+        message: 'Disk scan has been completed successfully.'
+      });
+    } catch (error) {
+      console.error('Error scanning disk:', error);
+      setIsScanning(false);
+      addToast({
+        type: 'error',
+        title: 'Scan Failed',
+        message: 'Failed to scan the disk. Please try again.'
+      });
+    }
   };
 
   const handleChooseFolder = async () => {
-    const result = await invoke("select_folder");
-    if (result) {
-      setIsScanning(true);
-      setScanStatus({ filesAnalyzed: 0, totalSize: 0 });
-      await invoke("start_scan", { path: result });
+    try {
+      const result = await invoke("select_folder");
+      if (result) {
+        setIsScanning(true);
+        setScanStatus({ filesAnalyzed: 0, totalSize: 0 });
+        await invoke("start_scan", { path: result });
+        setIsScanning(false);
+        setLocation("/scan-results");
+        addToast({
+          type: 'success',
+          title: 'Folder Scan Completed',
+          message: 'Selected folder has been scanned successfully.'
+        });
+      }
+    } catch (error) {
+      console.error('Error scanning folder:', error);
       setIsScanning(false);
-      setLocation("/scan-results");
+      addToast({
+        type: 'error',
+        title: 'Scan Failed',
+        message: 'Failed to scan the selected folder. Please try again.'
+      });
     }
   };
 

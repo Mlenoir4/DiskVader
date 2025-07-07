@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
-import { ArrowLeft, FileText, Database, Folder, Star, Download, RotateCcw, Filter, ExternalLink, ChevronRight } from "lucide-react";
+import { ArrowLeft, FileText, Database, Folder, Star, Download, RotateCcw, Filter, ExternalLink, ChevronRight, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import CustomPieChart from "../components/charts/pie-chart";
 import CustomLineChart from "../components/charts/line-chart";
 import FileItem from "../components/file-item";
+import { useToast } from "../components/ui/toast-provider";
 import { invoke } from "@tauri-apps/api/core";
 
 const DeepAnalysis = () => {
@@ -15,15 +16,51 @@ const DeepAnalysis = () => {
   const [folders, setFolders] = useState<any[]>([]);
   const [largestFiles, setLargestFiles] = useState<any[]>([]);
   const [cleanupSuggestions, setCleanupSuggestions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
+  const { addToast } = useToast();
   
   useEffect(() => {
-    invoke("get_scan_results").then((data) => setScanData(data));
-    invoke("get_pie_chart_data").then((data) => setPieChartData(data as any[]));
-    invoke("get_growth_data").then((data) => setGrowthData(data as any[]));
-    invoke("get_folders").then((data) => setFolders(data as any[]));
-    invoke("get_largest_files").then((data) => setLargestFiles(data as any[]));
-    invoke("get_cleanup_suggestions").then((data) => setCleanupSuggestions(data as any[]));
-  }, []);
+    const loadData = async () => {
+      try {
+        setLoading(true);
+        const [
+          scanResults,
+          pieResults,
+          growthResults,
+          foldersResults,
+          filesResults,
+          cleanupResults
+        ] = await Promise.all([
+          invoke("get_scan_results"),
+          invoke("get_pie_chart_data"),
+          invoke("get_growth_data"),
+          invoke("get_folders"),
+          invoke("get_largest_files"),
+          invoke("get_cleanup_suggestions")
+        ]);
+
+        setScanData(scanResults);
+        setPieChartData(pieResults as any[]);
+        setGrowthData(growthResults as any[]);
+        setFolders(foldersResults as any[]);
+        setLargestFiles(filesResults as any[]);
+        setCleanupSuggestions(cleanupResults as any[]);
+      } catch (error) {
+        console.error('Error loading data:', error);
+        addToast({
+          type: 'error',
+          title: 'Error Loading Data',
+          message: 'Failed to load analysis data.'
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [addToast]);
 
   const formatSize = (bytes: number) => {
     if (bytes >= 1073741824) {
@@ -35,16 +72,97 @@ const DeepAnalysis = () => {
     }
   };
 
-  const handleExportReport = () => {
-    console.log('Exporting report...');
+  const handleExportReport = async () => {
+    try {
+      setExporting(true);
+      await invoke("export_analysis_report");
+      addToast({
+        type: 'success',
+        title: 'Report Exported',
+        message: 'Analysis report has been exported successfully.'
+      });
+    } catch (error) {
+      console.error('Error exporting report:', error);
+      addToast({
+        type: 'error',
+        title: 'Export Failed',
+        message: 'Failed to export the report. Please try again.'
+      });
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const handleRescan = () => {
-    console.log('Rescanning...');
+  const handleRescan = async () => {
+    try {
+      setRescanning(true);
+      const scanPath = scanData?.scan_path || scanData?.scanPath || '/';
+      await invoke("start_scan", { path: scanPath });
+      
+      // Reload all data
+      const [
+        newScanData,
+        newPieData,
+        newGrowthData,
+        newFolders,
+        newFiles,
+        newCleanup
+      ] = await Promise.all([
+        invoke("get_scan_results"),
+        invoke("get_pie_chart_data"),
+        invoke("get_growth_data"),
+        invoke("get_folders"),
+        invoke("get_largest_files"),
+        invoke("get_cleanup_suggestions")
+      ]);
+
+      setScanData(newScanData);
+      setPieChartData(newPieData as any[]);
+      setGrowthData(newGrowthData as any[]);
+      setFolders(newFolders as any[]);
+      setLargestFiles(newFiles as any[]);
+      setCleanupSuggestions(newCleanup as any[]);
+      
+      addToast({
+        type: 'success',
+        title: 'Analysis Updated',
+        message: 'Deep analysis has been refreshed successfully.'
+      });
+    } catch (error) {
+      console.error('Error rescanning:', error);
+      addToast({
+        type: 'error',
+        title: 'Rescan Failed',
+        message: 'Failed to refresh analysis. Please try again.'
+      });
+    } finally {
+      setRescanning(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-blue-600" />
+          <p className="text-gray-600">Loading deep analysis...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!scanData) {
-    return <div>Loading...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <Database className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+          <p className="text-gray-600">No analysis data available</p>
+          <Button onClick={() => window.location.href = '/'} className="mt-4">
+            Go to Dashboard
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -254,17 +372,27 @@ const DeepAnalysis = () => {
         <Button
           onClick={handleExportReport}
           className="bg-black text-white hover:bg-gray-800"
+          disabled={exporting}
         >
-          <Download className="w-4 h-4 mr-2" />
-          Export Report
+          {exporting ? (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          ) : (
+            <Download className="w-4 h-4 mr-2" />
+          )}
+          {exporting ? 'Exporting...' : 'Export Report'}
         </Button>
         <Button
           onClick={handleRescan}
           variant="outline"
           className="bg-gray-100 text-gray-700 hover:bg-gray-200"
+          disabled={rescanning}
         >
-          <RotateCcw className="w-4 h-4 mr-2" />
-          Rescan
+          {rescanning ? (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          ) : (
+            <RotateCcw className="w-4 h-4 mr-2" />
+          )}
+          {rescanning ? 'Rescanning...' : 'Rescan'}
         </Button>
       </div>
     </div>

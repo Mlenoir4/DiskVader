@@ -1,15 +1,45 @@
-import { useState } from "react";
-import { Trash2, Download, Clock, Copy, FileText, Archive, Image, Database, ExternalLink } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Trash2, Download, Clock, Copy, FileText, Archive, Image, Database, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Checkbox } from "../components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { useToast } from "../components/ui/toast-provider";
+import { invoke } from "@tauri-apps/api/core";
 import { mockCleanupSuggestions } from "../lib/mock-data";
 
 const SpaceCleanup = () => {
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set());
   const [cleanupItems, setCleanupItems] = useState(mockCleanupSuggestions);
+  const [loading, setLoading] = useState(true);
+  const [cleaningUp, setCleaningUp] = useState(false);
+  const [filterType, setFilterType] = useState<string>('all');
+  const { addToast } = useToast();
+  
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        setLoading(true);
+        // Charger les données de nettoyage depuis le backend
+        const cleanupData = await invoke("get_cleanup_suggestions");
+        if (cleanupData) {
+          setCleanupItems(cleanupData as any[]);
+        }
+      } catch (error) {
+        console.error('Error loading cleanup data:', error);
+        addToast({
+          type: 'error',
+          title: 'Error Loading Data',
+          message: 'Failed to load cleanup suggestions.'
+        });
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [addToast]);
 
   const formatSize = (bytes: number) => {
     if (bytes >= 1073741824) {
@@ -27,9 +57,40 @@ const SpaceCleanup = () => {
     ));
   };
 
-  const handleCleanAllSelected = () => {
-    const selectedItems = cleanupItems.filter(item => item.selected);
-    console.log('Cleaning selected items:', selectedItems);
+  const handleCleanAllSelected = async () => {
+    try {
+      setCleaningUp(true);
+      const selectedItems = cleanupItems.filter(item => item.selected);
+      if (selectedItems.length === 0) {
+        addToast({
+          type: 'warning',
+          title: 'No Items Selected',
+          message: 'Please select items to clean.'
+        });
+        return;
+      }
+
+      await invoke("clean_selected_items", { items: selectedItems });
+      
+      // Refresh cleanup suggestions
+      const newCleanupData = await invoke("get_cleanup_suggestions");
+      setCleanupItems(newCleanupData as any[]);
+      
+      addToast({
+        type: 'success',
+        title: 'Cleanup Completed',
+        message: `Successfully cleaned ${selectedItems.length} items.`
+      });
+    } catch (error) {
+      console.error('Error cleaning items:', error);
+      addToast({
+        type: 'error',
+        title: 'Cleanup Failed',
+        message: 'Failed to clean selected items. Please try again.'
+      });
+    } finally {
+      setCleaningUp(false);
+    }
   };
 
   const handleFileSelect = (fileId: number, checked: boolean) => {
@@ -65,21 +126,94 @@ const SpaceCleanup = () => {
     }
   };
 
-  const handleDeleteFile = (fileId: number) => {
-    console.log('Deleting file:', fileId);
+  const handleDeleteFile = async (fileId: number) => {
+    try {
+      await invoke("delete_file", { file_id: fileId });
+      addToast({
+        type: 'success',
+        title: 'File Deleted',
+        message: 'File has been deleted successfully.'
+      });
+    } catch (error) {
+      console.error('Error deleting file:', error);
+      addToast({
+        type: 'error',
+        title: 'Delete Failed',
+        message: 'Failed to delete the file. Please try again.'
+      });
+    }
   };
 
-  const handleEmptyTrash = () => {
-    console.log('Emptying trash...');
+  const handleEmptyTrash = async () => {
+    try {
+      await invoke("empty_trash");
+      addToast({
+        type: 'success',
+        title: 'Trash Emptied',
+        message: 'Trash has been emptied successfully.'
+      });
+    } catch (error) {
+      console.error('Error emptying trash:', error);
+      addToast({
+        type: 'error',
+        title: 'Empty Trash Failed',
+        message: 'Failed to empty trash. Please try again.'
+      });
+    }
   };
 
-  const handleCompressFiles = () => {
-    console.log('Compressing files...');
+  const handleCompressFiles = async () => {
+    try {
+      const selectedFileIds = Array.from(selectedFiles);
+      await invoke("compress_files", { file_ids: selectedFileIds });
+      addToast({
+        type: 'success',
+        title: 'Files Compressed',
+        message: 'Selected files have been compressed successfully.'
+      });
+    } catch (error) {
+      console.error('Error compressing files:', error);
+      addToast({
+        type: 'error',
+        title: 'Compression Failed',
+        message: 'Failed to compress files. Please try again.'
+      });
+    }
   };
 
-  const handleMoveToCloud = () => {
-    console.log('Moving to cloud...');
+  const handleMoveToCloud = async () => {
+    try {
+      const selectedFileIds = Array.from(selectedFiles);
+      await invoke("move_to_cloud", { file_ids: selectedFileIds });
+      addToast({
+        type: 'success',
+        title: 'Files Moved to Cloud',
+        message: 'Selected files have been moved to cloud storage.'
+      });
+    } catch (error) {
+      console.error('Error moving to cloud:', error);
+      addToast({
+        type: 'error',
+        title: 'Cloud Move Failed',
+        message: 'Failed to move files to cloud. Please try again.'
+      });
+    }
   };
+
+  const filteredCleanupItems = filterType === 'all' 
+    ? cleanupItems 
+    : cleanupItems.filter(item => item.type === filterType);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-blue-600" />
+          <p className="text-gray-600">Loading cleanup suggestions...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
@@ -105,15 +239,35 @@ const SpaceCleanup = () => {
       <div className="mb-8">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-semibold text-gray-900">Quick Cleanup Suggestions</h2>
-          <Button
-            onClick={handleCleanAllSelected}
-            className="bg-red-600 text-white hover:bg-red-700"
-          >
-            Clean All Selected
-          </Button>
+          <div className="flex items-center space-x-4">
+            <Select value={filterType} onValueChange={setFilterType}>
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="Filter by type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="Trash">Trash</SelectItem>
+                <SelectItem value="Downloads">Downloads</SelectItem>
+                <SelectItem value="Temp Files">Temp Files</SelectItem>
+                <SelectItem value="Duplicates">Duplicates</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              onClick={handleCleanAllSelected}
+              className="bg-red-600 text-white hover:bg-red-700"
+              disabled={cleaningUp || filteredCleanupItems.filter(item => item.selected).length === 0}
+            >
+              {cleaningUp ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Trash2 className="w-4 h-4 mr-2" />
+              )}
+              {cleaningUp ? 'Cleaning...' : 'Clean All Selected'}
+            </Button>
+          </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {cleanupItems.map((item, index) => (
+          {filteredCleanupItems.map((item, index) => (
             <Card key={index} className="stats-card">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center space-x-3">
