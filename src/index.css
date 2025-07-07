@@ -1,0 +1,290 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: hsl(0, 0%, 100%);
+  --foreground: hsl(20, 14.3%, 4.1%);
+  --muted: hsl(60, 4.8%, 95.9%);
+  --muted-foreground: hsl(25, 5.3%, 44.7%);
+  --popover: hsl(0, 0%, 100%);
+  --popover-foreground: hsl(20, 14.3%, 4.1%);
+  --card: hsl(0, 0%, 100%);
+  --card-foreground: hsl(20, 14.3%, 4.1%);
+  --border: hsl(20, 5.9%, 90%);
+  --input: hsl(20, 5.9%, 90%);
+  --primary: hsl(0, 0%, 0%);
+  --primary-foreground: hsl(0, 0%, 100%);
+  --secondary: hsl(60, 4.8%, 95.9%);
+  --secondary-foreground: hsl(24, 9.8%, 10%);
+  --accent: hsl(60, 4.8%, 95.9%);
+  --accent-foreground: hsl(24, 9.8%, 10%);
+  --destructive: hsl(0, 84.2%, 60.2%);
+  --destructive-foreground: hsl(60, 9.1%, 97.8%);
+  --ring: hsl(20, 14.3%, 4.1%);
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: hsl(240, 10%, 3.9%);
+  --foreground: hsl(0, 0%, 98%);
+  --muted: hsl(240, 3.7%, 15.9%);
+  --muted-foreground: hsl(240, 5%, 64.9%);
+  --popover: hsl(240, 10%, 3.9%);
+  --popover-foreground: hsl(0, 0%, 98%);
+  --card: hsl(240, 10%, 3.9%);
+  --card-foreground: hsl(0, 0%, 98%);
+  --border: hsl(240, 3.7%, 15.9%);
+  --input: hsl(240, 3.7%, 15.9%);
+  --primary: hsl(0, 0%, 0%);
+  --primary-foreground: hsl(0, 0%, 100%);
+  --secondary: hsl(240, 3.7%, 15.9%);
+  --secondary-foreground: hsl(0, 0%, 98%);
+  --accent: hsl(240, 3.7%, 15.9%);
+  --accent-foreground: hsl(0, 0%, 98%);
+  --destructive: hsl(0, 62.8%, 30.6%);
+  --destructive-foreground: hsl(0, 0%, 98%);
+  --ring: hsl(240, 4.9%, 83.9%);
+  --radius: 0.5rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-gray-50 text-foreground;
+  }
+}
+
+/* Custom styles for the app */
+.nav-header {
+  background: hsl(0, 0%, 0%);
+  color: hsl(0, 0%, 100%);
+}
+
+.nav-tab {
+  transition: border-color 0.3s ease;
+}
+
+.nav-tab.active {
+  border-bottom: 2px solid hsl(0, 0%, 100%);
+}
+
+.nav-tab:hover {
+  border-bottom: 2px solid hsl(0, 0%, 75%);
+}
+
+.feature-card {
+  background: hsl(0, 0%, 100%);
+  border: 1px solid hsl(20, 5.9%, 90%);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.stats-card {
+  background: hsl(0, 0%, 100%);
+  border: 1px solid hsl(20, 5.9%, 90%);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+}
+
+.file-item {
+  background: hsl(60, 4.8%, 95.9%);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.progress-bar {
+  background: hsl(20, 5.9%, 90%);
+  border-radius: 9999px;
+  height: 0.5rem;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+.error-log {
+  background: hsl(0, 0%, 9%);
+  color: hsl(120, 100%, 40%);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.875rem;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.cleanup-suggestion {
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+.cleanup-suggestion.blue {
+  background: hsl(214, 100%, 97%);
+}
+
+.cleanup-suggestion.green {
+  background: hsl(142, 76%, 97%);
+}
+
+.cleanup-suggestion.yellow {
+  background: hsl(48, 100%, 97%);
+}
+
+.chart-container {
+  background: hsl(60, 4.8%, 95.9%);
+  border-radius: 0.5rem;
+  padding: 2rem;
+  height: 16rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.treemap-mockup {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  width: 100%;
+  height: 100%;
+}
+
+.treemap-item {
+  border-radius: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: hsl(0, 0%, 100%);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.treemap-item.blue {
+  background: hsl(221, 83%, 53%);
+}
+
+.treemap-item.green {
+  background: hsl(142, 71%, 45%);
+}
+
+.treemap-item.yellow {
+  background: hsl(48, 96%, 53%);
+}
+
+.treemap-item.purple {
+  background: hsl(262, 83%, 58%);
+}
+
+.treemap-item.gray {
+  background: hsl(220, 13%, 18%);
+}
+
+.table-hover:hover {
+  background: hsl(60, 4.8%, 97%);
+}
+
+.icon-blue {
+  color: hsl(221, 83%, 53%);
+}
+
+.icon-green {
+  color: hsl(142, 71%, 45%);
+}
+
+.icon-yellow {
+  color: hsl(48, 96%, 53%);
+}
+
+.icon-purple {
+  color: hsl(262, 83%, 58%);
+}
+
+.icon-orange {
+  color: hsl(25, 95%, 53%);
+}
+
+.icon-red {
+  color: hsl(0, 84%, 60%);
+}
+
+.icon-gray {
+  color: hsl(220, 13%, 18%);
+}
+
+.bg-blue-100 {
+  background: hsl(214, 100%, 97%);
+}
+
+.bg-green-100 {
+  background: hsl(142, 76%, 97%);
+}
+
+.bg-yellow-100 {
+  background: hsl(48, 100%, 97%);
+}
+
+.bg-purple-100 {
+  background: hsl(262, 100%, 97%);
+}
+
+.bg-red-100 {
+  background: hsl(0, 100%, 97%);
+}
+
+.text-blue-600 {
+  color: hsl(221, 83%, 53%);
+}
+
+.text-green-600 {
+  color: hsl(142, 71%, 45%);
+}
+
+.text-yellow-600 {
+  color: hsl(48, 96%, 53%);
+}
+
+.text-purple-600 {
+  color: hsl(262, 83%, 58%);
+}
+
+.text-red-600 {
+  color: hsl(0, 84%, 60%);
+}
+
+.text-orange-600 {
+  color: hsl(25, 95%, 53%);
+}
+
+.bg-blue-600 {
+  background: hsl(221, 83%, 53%);
+}
+
+.bg-green-600 {
+  background: hsl(142, 71%, 45%);
+}
+
+.bg-red-600 {
+  background: hsl(0, 84%, 60%);
+}
+
+.hover\:bg-blue-700:hover {
+  background: hsl(221, 83%, 45%);
+}
+
+.hover\:bg-green-700:hover {
+  background: hsl(142, 71%, 37%);
+}
+
+.hover\:bg-red-700:hover {
+  background: hsl(0, 84%, 52%);
+}
