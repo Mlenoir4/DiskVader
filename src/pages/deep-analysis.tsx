@@ -29,7 +29,7 @@ const DeepAnalysis = () => {
           scanResults,
           pieResults,
           growthResults,
-          foldersResults,
+          foldersResults, 
           filesResults,
           cleanupResults
         ] = await Promise.all([

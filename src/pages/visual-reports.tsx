@@ -357,6 +357,7 @@ const VisualReports = () => {
                 <TreeMapChart 
                   data={doughnutData} 
                   height={320}
+                  showLegend={true}
                 />
               )}
             </div>

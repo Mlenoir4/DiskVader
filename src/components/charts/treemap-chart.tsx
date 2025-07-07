@@ -10,29 +10,34 @@ interface TreeMapChartProps {
   data: TreeMapDataItem[];
   height?: number;
   width?: string;
+  showLegend?: boolean;
 }
 
 const TreeMapChart: React.FC<TreeMapChartProps> = ({ 
   data = [], 
   height = 320,
-  width = "100%" 
+  width = "100%",
+  showLegend = false 
 }) => {
   // Calculate total value for percentage calculations
   const totalValue = data.reduce((sum, item) => sum + item.value, 0);
+  
+  // Calculer la hauteur du chart en premier
+  const chartHeight = showLegend ? height - 60 : height;
   
   // Calculate relative sizes for treemap layout
   const processedData = data.map(item => ({
     ...item,
     percentage: (item.value / totalValue) * 100,
     // Calculate dimensions based on percentage
-    area: (item.value / totalValue) * (height * 400) // Assuming 400px width base
+    area: (item.value / totalValue) * (chartHeight * 400) // Utiliser chartHeight au lieu de height
   }));
 
   // Simple treemap layout algorithm - arrange rectangles in rows
   const layoutItems = () => {
     const items = [...processedData].sort((a, b) => b.value - a.value);
     const containerWidth = 400; // Base container width
-    const containerHeight = height;
+    const containerHeight = chartHeight; // Utiliser la hauteur ajustée
     
     let currentX = 0;
     let currentY = 0;
@@ -100,9 +105,10 @@ const TreeMapChart: React.FC<TreeMapChartProps> = ({
     <div className="w-full" style={{ height: `${height}px` }}>
       <svg
         width={width}
-        height={height}
-        viewBox="0 0 400 320"
-        className="w-full h-full"
+        height={chartHeight}
+        viewBox={`0 0 400 ${chartHeight}`}
+        className="w-full"
+        style={{ height: `${chartHeight}px` }}
       >
         {layoutedItems.map((item, index) => (
           <g key={index}>
@@ -191,20 +197,29 @@ const TreeMapChart: React.FC<TreeMapChartProps> = ({
         ))}
       </svg>
       
-      {/* Legend */}
-      <div className="mt-4 flex flex-wrap gap-4 justify-center">
-        {processedData.map((item, index) => (
-          <div key={index} className="flex items-center space-x-2">
-            <div 
-              className="w-3 h-3 rounded"
-              style={{ backgroundColor: item.color }}
-            />
-            <span className="text-sm text-gray-600">
-              {item.name} ({item.percentage.toFixed(1)}%)
-            </span>
+      {/* Legend - Conditionnelle et mieux positionnée */}
+      {showLegend && (
+        <div className="mt-2 px-4">
+          <div className="flex flex-wrap gap-3 justify-center">
+            {processedData.slice(0, 6).map((item, index) => (
+              <div key={index} className="flex items-center space-x-2">
+                <div 
+                  className="w-3 h-3 rounded flex-shrink-0"
+                  style={{ backgroundColor: item.color }}
+                />
+                <span className="text-xs text-gray-600 truncate">
+                  {item.name} ({item.percentage.toFixed(1)}%)
+                </span>
+              </div>
+            ))}
+            {processedData.length > 6 && (
+              <span className="text-xs text-gray-500">
+                +{processedData.length - 6} more...
+              </span>
+            )}
           </div>
-        ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
