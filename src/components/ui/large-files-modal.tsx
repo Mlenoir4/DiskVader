@@ -7,7 +7,7 @@ interface LargeFile {
   name: string;
   path: string;
   size: number;
-  file_type: string;
+  type: string;
   extension: string;
 }
 
@@ -91,7 +91,7 @@ const LargeFilesModal: React.FC<LargeFilesModalProps> = ({ isOpen, onClose, file
                 </div>
                 <div className="text-right">
                   <div className="font-semibold text-gray-900">{formatSize(file.size)}</div>
-                  <div className="text-sm text-gray-500 capitalize">{file.file_type}</div>
+                  <div className="text-sm text-gray-500 capitalize">{file.type}</div>
                 </div>
               </div>
             ))}
