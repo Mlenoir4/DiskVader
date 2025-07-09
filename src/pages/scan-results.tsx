@@ -9,14 +9,14 @@ import { useScanContext } from "../contexts/scan-context";
 import { useLocation } from "wouter";
 import { invoke } from "@tauri-apps/api/core";
 import EnhancedFoldersModal from "../components/ui/enhanced-folders-modal";
+import UnifiedDistributionChart from "../components/charts/unified-distribution-chart";
 
 const ScanResults = () => {
   const [loading, setLoading] = useState(false);
   const [rescanning, setRescanning] = useState(false);
-  const [showAllFolders, setShowAllFolders] = useState(false);
-  const [showAllFiles, setShowAllFiles] = useState(false);
   const [foldersModalOpen, setFoldersModalOpen] = useState(false);
   const [filesModalOpen, setFilesModalOpen] = useState(false);
+  const [doughnutData, setDoughnutData] = useState<any[]>([]);
   const { addToast } = useToast();
   const [, setLocation] = useLocation();
   
@@ -118,6 +118,56 @@ const ScanResults = () => {
     }
   };
 
+  // Charger les données pour le graphique doughnut
+  useEffect(() => {
+    const loadDoughnutData = async () => {
+      if (!isDataAvailable) return;
+      
+      try {
+        const doughnutResults = await invoke("get_doughnut_data");
+        setDoughnutData(doughnutResults as any[]);
+      } catch (error) {
+        console.error('Error loading doughnut data:', error);
+      }
+    };
+
+    loadDoughnutData();
+  }, [isDataAvailable]);
+
+  // Adapter les données pour le composant unifié
+  const adaptFileTypeData = () => {
+    if (!fileTypeDistribution || !Array.isArray(fileTypeDistribution)) return [];
+    
+    const colors = [
+      '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444',
+      '#6B7280', '#F97316', '#EC4899', '#14B8A6', '#84CC16'
+    ];
+    
+    return fileTypeDistribution.map((item, index) => ({
+      name: item.type,
+      type: item.type,
+      size: item.size,
+      count: item.count,
+      color: item.color || colors[index % colors.length]
+    }));
+  };
+
+  const adaptFolderData = () => {
+    if (!folders || !Array.isArray(folders)) return [];
+    
+    const colors = [
+      '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444',
+      '#6B7280', '#F97316', '#EC4899', '#14B8A6', '#84CC16'
+    ];
+    
+    return folders.map((folder, index) => ({
+      name: folder.name,
+      size: folder.size || 0,
+      count: folder.file_count,
+      color: colors[index % colors.length]
+    }));
+  };
+
   if (!isDataAvailable || !scanData) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -188,54 +238,19 @@ const ScanResults = () => {
 
       {/* Main Content Grid */}
       <div className="grid lg:grid-cols-2 gap-8 mb-8">
-        {/* File Types Distribution */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center space-x-2">
-              <HardDrive className="w-5 h-5" />
-              <span>File Types Distribution</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
-              {fileTypeDistribution && Array.isArray(fileTypeDistribution) && fileTypeDistribution.length > 0 ? (
-                fileTypeDistribution.map((item, index) => {
-                  const colors = [
-                    '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EF4444',
-                    '#6B7280', '#F97316', '#EC4899', '#14B8A6', '#84CC16'
-                  ];
-                  const percentage = scanData?.total_size ? (item.size / scanData.total_size) * 100 : 0;
-                  
-                  return (
-                    <div key={index} className="text-center">
-                      <div 
-                        className="w-16 h-16 rounded-lg flex items-center justify-center mx-auto mb-3 shadow-sm" 
-                        style={{ backgroundColor: `${colors[index % colors.length]}20` }}
-                      >
-                        <div className="text-2xl">
-                          {getFileTypeIcon(item.type)}
-                        </div>
-                      </div>
-                      <div className="font-medium text-gray-900 text-sm mb-1">{item.type}</div>
-                      <div className="text-lg font-bold text-gray-900">{formatSize(item.size)}</div>
-                      <div className="text-xs text-gray-600 mb-1">{item.count.toLocaleString()} files</div>
-                      <div className="text-xs font-medium" style={{ color: colors[index % colors.length] }}>
-                        {percentage.toFixed(1)}%
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="col-span-full text-center py-8 text-gray-500">
-                  <div className="text-center">
-                    <HardDrive className="w-12 h-12 mx-auto mb-2 opacity-50" />
-                    <p>No file type data available</p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        {/* Data Distribution - Unified Component */}
+        <UnifiedDistributionChart
+          fileTypeData={adaptFileTypeData()}
+          folderData={adaptFolderData()}
+          doughnutData={doughnutData}
+          totalSize={scanData?.total_size || 0}
+          title="Data Distribution"
+          showDataSelector={true}
+          showViewSelector={true}
+          defaultDataType="fileTypes"
+          defaultViewType="list"
+          isLoading={loading || rescanning}
+        />
 
         {/* Largest Files */}
         <Card>
@@ -335,6 +350,9 @@ const AllFilesModal = ({
   const [loading, setLoading] = useState(false);
   const [sortBy, setSortBy] = useState<'size' | 'name' | 'type'>('size');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  
+  // Accéder aux données du contexte pour avoir le nombre total de fichiers
+  const { scanData } = useScanContext();
 
   const formatSize = (bytes: number) => {
     if (bytes >= 1099511627776) { // 1TB
@@ -361,57 +379,94 @@ const AllFilesModal = ({
     try {
       setLoading(true);
       
-      // D'abord, essayer get_all_files
+      // Essayer plusieurs approches pour obtenir plus de fichiers
       let allFilesData: any[] = [];
+      
       try {
-        allFilesData = await invoke('get_all_files') as any[];
-        console.log(`Loaded ${allFilesData.length} files from get_all_files`);
-      } catch (error) {
-        console.error('get_all_files failed:', error);
+        // 1. D'abord essayer get_largest_files
+        const largestFiles = await invoke('get_largest_files') as any[];
+        console.log(`Step 1: Loaded ${largestFiles.length} from get_largest_files`);
+        allFilesData = [...largestFiles];
         
-        // Si get_all_files échoue, essayer de récupérer les fichiers par dossier
-        try {
-          const foldersData = await invoke('get_folders') as any[];
-          console.log(`Found ${foldersData.length} folders, loading files from each...`);
-          
-          for (const folder of foldersData) {
-            try {
-              const folderFiles = await invoke('get_folder_files', { 
-                folderPath: folder.path || '' 
-              }) as any[];
-              allFilesData = [...allFilesData, ...folderFiles];
-            } catch (folderError) {
-              console.error(`Error loading files from folder ${folder.name}:`, folderError);
+        // 2. Si on n'a pas assez de fichiers, essayer de récupérer par dossiers
+        if (allFilesData.length < 50) {
+          try {
+            const folders = await invoke('get_folders') as any[];
+            console.log(`Step 2: Found ${folders.length} folders to explore`);
+            
+            for (const folder of folders.slice(0, 10)) { // Explorer les 10 premiers dossiers
+              try {
+                const folderFiles = await invoke('get_folder_files', { 
+                  folderPath: folder.path || folder.name || ''
+                }) as any[];
+                
+                if (folderFiles && folderFiles.length > 0) {
+                  allFilesData = [...allFilesData, ...folderFiles];
+                  console.log(`Added ${folderFiles.length} files from folder: ${folder.name}`);
+                  
+                  // Arrêter si on a déjà beaucoup de fichiers pour éviter les performances
+                  if (allFilesData.length > 500) {
+                    console.log('Stopping folder exploration, enough files collected');
+                    break;
+                  }
+                }
+              } catch (folderError) {
+                console.warn(`Error loading files from folder ${folder.name}:`, folderError);
+              }
             }
+          } catch (foldersError) {
+            console.warn('Could not get folders for file exploration:', foldersError);
           }
-          
-          console.log(`Total files loaded from folders: ${allFilesData.length}`);
-        } catch (foldersError) {
-          console.error('get_folders also failed:', foldersError);
-          
-          // Dernier recours : utiliser get_largest_files
-          allFilesData = await invoke('get_largest_files') as any[];
-          console.log(`Fallback to largest files: ${allFilesData.length} files`);
+        }
+        
+        // 3. Si on n'a toujours pas assez, essayer une approche alternative
+        if (allFilesData.length < 20) {
+          try {
+            // Essayer d'autres APIs si elles existent
+            const alternativeFiles = await invoke('get_all_files') as any[];
+            console.log(`Step 3: Alternative approach found ${alternativeFiles.length} files`);
+            allFilesData = [...allFilesData, ...alternativeFiles];
+          } catch (altError) {
+            console.log('Alternative file loading method not available:', altError);
+          }
+        }
+        
+      } catch (error) {
+        console.error('Primary file loading failed:', error);
+        
+        // Fallback final : utiliser les fichiers du contexte
+        if (files && files.length > 0) {
+          allFilesData = [...files];
+          console.log(`Fallback: Using ${files.length} files from context`);
         }
       }
       
-      // Supprimer les doublons basés sur le chemin
+      // Supprimer les doublons basés sur le chemin complet
       const uniqueFiles = allFilesData.filter((file, index, self) => 
-        index === self.findIndex(f => f.path === file.path)
+        index === self.findIndex(f => 
+          f.path === file.path && f.name === file.name
+        )
       );
       
-      console.log(`Final unique files count: ${uniqueFiles.length}`);
-      setAllFiles(uniqueFiles);
+      // Trier par taille décroissante et limiter à 100
+      const sortedAndLimited = uniqueFiles
+        .filter(file => file.size && file.size > 0) // Filtrer les fichiers avec une taille valide
+        .sort((a, b) => b.size - a.size)
+        .slice(0, 100);
+      
+      console.log(`Final result: ${sortedAndLimited.length} files (from ${uniqueFiles.length} unique, ${allFilesData.length} total)`);
+      setAllFiles(sortedAndLimited);
       
     } catch (error) {
-      console.error('Error loading all files:', error);
-      setAllFiles(files || []);
+      console.error('Error loading files:', error);
+      // Dernier recours
+      setAllFiles(files?.slice(0, 100) || []);
     } finally {
       setLoading(false);
     }
   };
 
-  // Fonction de tri
+  // Fonction de tri optimisée
   const sortedFiles = [...allFiles].sort((a, b) => {
     let comparison = 0;
     
@@ -448,44 +503,52 @@ const AllFilesModal = ({
       <div className="bg-white rounded-lg p-6 max-w-6xl w-full mx-4 max-h-[80vh] overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
           <div>
-            <h2 className="text-xl font-bold">All Files</h2>
+            <h2 className="text-xl font-bold">Largest Files</h2>
             <p className="text-sm text-gray-600">
-              {loading ? 'Loading...' : `${sortedFiles.length.toLocaleString()} files found`}
+              {loading 
+                ? 'Loading files from scan...' 
+                : `Showing ${sortedFiles.length.toLocaleString()} largest files${scanData?.total_files ? ` (from ${scanData.total_files.toLocaleString()} total files in scan)` : ''}`
+              }
             </p>
           </div>
           <Button variant="ghost" onClick={onClose}>✕</Button>
         </div>
         
         {/* Options de tri */}
-        <div className="flex space-x-2 mb-4">
-          <Button
-            variant={sortBy === 'size' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => handleSort('size')}
-          >
-            Size {sortBy === 'size' && (sortOrder === 'desc' ? '↓' : '↑')}
-          </Button>
-          <Button
-            variant={sortBy === 'name' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => handleSort('name')}
-          >
-            Name {sortBy === 'name' && (sortOrder === 'desc' ? '↓' : '↑')}
-          </Button>
-          <Button
-            variant={sortBy === 'type' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => handleSort('type')}
-          >
-            Type {sortBy === 'type' && (sortOrder === 'desc' ? '↓' : '↑')}
-          </Button>
+        <div className="mb-4">
+          <div className="flex space-x-2 mb-2">
+            <Button
+              variant={sortBy === 'size' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleSort('size')}
+            >
+              By Size {sortBy === 'size' && (sortOrder === 'desc' ? '↓' : '↑')}
+            </Button>
+            <Button
+              variant={sortBy === 'name' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleSort('name')}
+            >
+              By Name {sortBy === 'name' && (sortOrder === 'desc' ? '↓' : '↑')}
+            </Button>
+            <Button
+              variant={sortBy === 'type' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleSort('type')}
+            >
+              By Type {sortBy === 'type' && (sortOrder === 'desc' ? '↓' : '↑')}
+            </Button>
+          </div>
         </div>
         
         <div className="space-y-2">
           {loading ? (
             <div className="text-center py-8">
               <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin text-blue-500" />
-              <p className="text-gray-600">Loading all files...</p>
+              <div className="space-y-2">
+                <p className="text-gray-600">Loading files from scan...</p>
+                <p className="text-xs text-gray-500">Exploring multiple sources to find your largest files</p>
+              </div>
             </div>
           ) : sortedFiles && sortedFiles.length > 0 ? (
             sortedFiles.map((file, index) => (
@@ -503,7 +566,9 @@ const AllFilesModal = ({
                   <div className="flex items-center space-x-6 flex-shrink-0">
                     <div className="text-sm font-medium">{formatSize(file.size)}</div>
                     <div className="text-sm text-gray-600 min-w-[80px]">
-                      {file.type || 'Unknown'}
+                      <span className="px-2 py-1 text-xs bg-gray-100 rounded-full">
+                        {file.type || 'Unknown'}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -533,52 +598,22 @@ const LargestFilesPreview = () => {
     try {
       setLoading(true);
       
-      // D'abord essayer get_all_files
-      let allFilesData: any[] = [];
+      // Utiliser directement get_largest_files pour les performances
+      let topFilesData: any[] = [];
       try {
-        allFilesData = await invoke('get_all_files') as any[];
-        console.log(`LargestFilesPreview: Loaded ${allFilesData.length} files from get_all_files`);
-      } catch (error) {
-        console.error('get_all_files failed in preview:', error);
+        topFilesData = await invoke('get_largest_files') as any[];
+        console.log(`LargestFilesPreview: Loaded ${topFilesData.length} largest files`);
         
-        // Si get_all_files échoue, essayer de récupérer par dossiers
-        try {
-          const foldersData = await invoke('get_folders') as any[];
-          console.log(`LargestFilesPreview: Found ${foldersData.length} folders`);
-          
-          for (const folder of foldersData) {
-            try {
-              const folderFiles = await invoke('get_folder_files', { 
-                folderPath: folder.path || '' 
-              }) as any[];
-              allFilesData = [...allFilesData, ...folderFiles];
-            } catch (folderError) {
-              console.error(`Error loading files from folder ${folder.name}:`, folderError);
-            }
-          }
-          
-          console.log(`LargestFilesPreview: Total files from folders: ${allFilesData.length}`);
-        } catch (foldersError) {
-          console.error('get_folders failed in preview:', foldersError);
-          
-          // Fallback final vers get_largest_files
-          allFilesData = await invoke('get_largest_files') as any[];
-          console.log(`LargestFilesPreview: Fallback to largest files: ${allFilesData.length}`);
-        }
+        // Prendre seulement les 5 premiers pour l'aperçu
+        topFilesData = topFilesData.slice(0, 5);
+        
+      } catch (error) {
+        console.error('get_largest_files failed in preview:', error);
+        topFilesData = [];
       }
       
-      // Supprimer les doublons
-      const uniqueFiles = allFilesData.filter((file, index, self) => 
-        index === self.findIndex(f => f.path === file.path)
-      );
-      
-      // Trier par taille décroissante et prendre les 5 premiers
-      const sortedFiles = uniqueFiles
-        .sort((a, b) => b.size - a.size)
-        .slice(0, 5);
-      
-      console.log(`LargestFilesPreview: Top 5 files selected from ${uniqueFiles.length} unique files`);
-      setTopFiles(sortedFiles);
+      console.log(`LargestFilesPreview: Top 5 largest files selected`);
+      setTopFiles(topFilesData);
       
     } catch (error) {
       console.error('Error loading top files:', error);

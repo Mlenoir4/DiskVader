@@ -1,4 +1,4 @@
-import { Folder, ChevronRight, ExternalLink } from "lucide-react";
+import { Folder, ExternalLink } from "lucide-react";
 
 interface FolderItemProps {
   name: string;

@@ -533,7 +533,7 @@ fn get_scan_results(scan_results: State<'_, SharedScanResults>) -> Result<ScanDa
 fn get_largest_files(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FileItem>, String> {
     let results = scan_results.lock().unwrap();
     
-    let mut file_items: Vec<FileItem> = results.largest_files.iter()
+    let file_items: Vec<FileItem> = results.largest_files.iter()
         .enumerate()
         .map(|(index, file)| FileItem {
             id: index as u32 + 1,
@@ -546,9 +546,7 @@ fn get_largest_files(scan_results: State<'_, SharedScanResults>) -> Result<Vec<F
             file_type: file.file_type.clone(),
             extension: file.extension.clone(),
         })
-        .collect();
-    
-    file_items.truncate(20);
+        .collect();    
     Ok(file_items)
 }
 

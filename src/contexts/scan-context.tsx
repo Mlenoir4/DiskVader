@@ -135,11 +135,13 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Fonctions pour sauvegarder dans localStorage
   const setScanData = (data: ScanData) => {
+    console.log('ScanContext: Setting scan data:', data);
     setScanDataState(data);
     localStorage.setItem(STORAGE_KEYS.SCAN_DATA, JSON.stringify(data));
     const timestamp = Date.now();
     setLastScanTime(timestamp);
     localStorage.setItem(STORAGE_KEYS.LAST_SCAN_TIME, JSON.stringify(timestamp));
+    console.log('ScanContext: Scan data saved with timestamp:', new Date(timestamp).toLocaleString());
   };
 
   const setLargestFiles = (files: FileItem[]) => {
@@ -176,13 +178,39 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     folders: FolderItem[],
     distribution: FileTypeDistribution[]
   ) => {
-    setScanData(scanData);
-    setLargestFiles(files);
-    setFolders(folders);
-    setFileTypeDistribution(distribution);
+    console.log('ScanContext: Saving scan results...', {
+      scanData: scanData ? { total_files: scanData.total_files, total_size: scanData.total_size } : null,
+      filesCount: files.length,
+      foldersCount: folders.length,
+      distributionCount: distribution.length
+    });
+    
+    // Sauvegarder toutes les données de manière atomique
+    const timestamp = Date.now();
+    const enrichedScanData = { ...scanData, timestamp };
+    
+    // Mettre à jour les états
+    setScanDataState(enrichedScanData);
+    setLargestFilesState(files);
+    setFoldersState(folders);
+    setFileTypeDistributionState(distribution);
+    setLastScanTime(timestamp);
+    
+    // Sauvegarder dans localStorage
+    try {
+      localStorage.setItem(STORAGE_KEYS.SCAN_DATA, JSON.stringify(enrichedScanData));
+      localStorage.setItem(STORAGE_KEYS.LARGEST_FILES, JSON.stringify(files));
+      localStorage.setItem(STORAGE_KEYS.FOLDERS, JSON.stringify(folders));
+      localStorage.setItem(STORAGE_KEYS.FILE_TYPE_DISTRIBUTION, JSON.stringify(distribution));
+      localStorage.setItem(STORAGE_KEYS.LAST_SCAN_TIME, JSON.stringify(timestamp));
+      
+      console.log('ScanContext: All data saved successfully to localStorage');
+    } catch (error) {
+      console.error('ScanContext: Error saving to localStorage:', error);
+    }
   };
 
-  const isDataAvailable = scanData !== null && scanData.total_files > 0;
+  const isDataAvailable = scanData !== null && scanData.total_files > 0 && scanData.total_size > 0;
   
   // Debug log pour isDataAvailable
   useEffect(() => {
@@ -190,6 +218,7 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isDataAvailable,
       scanData: scanData ? {
         total_files: scanData.total_files,
+        total_size: scanData.total_size,
         scan_path: scanData.scan_path,
         timestamp: scanData.timestamp
       } : null,

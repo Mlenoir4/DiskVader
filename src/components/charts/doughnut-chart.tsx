@@ -13,6 +13,7 @@ interface CustomDoughnutChartProps {
   outerRadius?: number;
   centerText?: string;
   centerSubText?: string;
+  formatValue?: (value: number, payload?: any) => string;
 }
 
 const CustomDoughnutChart = ({ 
@@ -21,15 +22,17 @@ const CustomDoughnutChart = ({
   innerRadius = 60, 
   outerRadius = 100,
   centerText,
-  centerSubText
+  centerSubText,
+  formatValue
 }: CustomDoughnutChartProps) => {
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
+      const displayValue = formatValue ? formatValue(data.value, data) : `${data.value.toFixed(1)} GB`;
       return (
         <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
           <p className="font-medium">{data.name}</p>
-          <p className="text-sm text-gray-600">{data.value.toFixed(1)} GB</p>
+          <p className="text-sm text-gray-600">{displayValue}</p>
         </div>
       );
     }

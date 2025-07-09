@@ -7,8 +7,6 @@ const Navigation = () => {
   const navItems = [
     { path: "/", label: "Home", id: "dashboard" },
     { path: "/scan-results", label: "Scan Results", id: "scan-results" },
-    { path: "/deep-analysis", label: "Deep Analysis", id: "deep-analysis" },
-    { path: "/visual-reports", label: "Visual Reports", id: "visual-reports" },
     { path: "/space-cleanup", label: "Space Cleanup", id: "space-cleanup" },
     { path: "/error-page", label: "Error Page", id: "error-page" },
   ];
@@ -18,7 +16,7 @@ const Navigation = () => {
       <div className="flex justify-between items-center max-w-7xl mx-auto">
         <div className="flex items-center space-x-2">
           <HardDrive className="text-xl" />
-          <span className="text-lg font-semibold">Disk Space Analyzer</span>
+          <span className="text-lg font-semibold">Disk Space</span>
         </div>
         <nav className="flex space-x-6">
           {navItems.map((item) => (

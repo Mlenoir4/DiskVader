@@ -122,7 +122,7 @@ const Dashboard = () => {
   // Fonction pour récupérer et sauvegarder toutes les données du scan
   const fetchAndSaveScanResults = async () => {
     try {
-      console.log('Fetching scan results...');
+      console.log('Dashboard: Fetching scan results...');
       
       // Récupérer toutes les données en parallèle
       const [scanData, largestFiles, folders, fileTypeDistribution] = await Promise.all([
@@ -132,7 +132,22 @@ const Dashboard = () => {
         invoke("get_file_type_distribution")
       ]);
 
-      console.log('Scan data received:', { scanData, largestFiles, folders, fileTypeDistribution });
+      console.log('Dashboard: Scan data received:', { 
+        scanData: scanData ? {
+          total_files: (scanData as any)?.total_files,
+          total_size: (scanData as any)?.total_size,
+          scan_path: (scanData as any)?.scan_path
+        } : null,
+        largestFilesCount: (largestFiles as any)?.length || 0,
+        foldersCount: (folders as any)?.length || 0,
+        fileTypeDistributionCount: (fileTypeDistribution as any)?.length || 0
+      });
+
+      // Vérifier que nous avons des données valides
+      if (!scanData || (scanData as any).total_files === 0) {
+        console.warn('Dashboard: No valid scan data received');
+        return;
+      }
 
       // Sauvegarder toutes les données dans le contexte
       saveScanResults(
@@ -142,10 +157,10 @@ const Dashboard = () => {
         fileTypeDistribution as any
       );
 
-      console.log('Scan data saved successfully');
+      console.log('Dashboard: Scan data saved successfully');
       
       // Forcer une re-évaluation en attendant un tick
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 200));
       
     } catch (error) {
       console.error('Error fetching scan results:', error);
@@ -178,44 +193,6 @@ const Dashboard = () => {
           and free up valuable space
         </p>
       </div>
-
-      {/* Data Status Section */}
-      {isDataAvailable && (
-        <Card className="mb-8 border-green-200 bg-green-50">
-          <CardContent className="p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
-                  <Database className="w-4 h-4 text-white" />
-                </div>
-                <div>
-                  <h3 className="font-medium text-green-900">Scan Data Available</h3>
-                  <p className="text-sm text-green-700">
-                    Last scan: {lastScanTime ? new Date(lastScanTime).toLocaleString() : 'Unknown'}
-                  </p>
-                </div>
-              </div>
-              <div className="flex space-x-2">
-                <Button
-                  onClick={() => setLocation('/scan-results')}
-                  size="sm"
-                  className="bg-green-600 hover:bg-green-700"
-                >
-                  View Results
-                </Button>
-                <Button
-                  onClick={clearAllData}
-                  size="sm"
-                  variant="outline"
-                  className="border-green-300 text-green-700 hover:bg-green-100"
-                >
-                  Clear Data
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Information sur la persistance */}
       {!isDataAvailable && (
@@ -271,12 +248,14 @@ const Dashboard = () => {
               <ChartPie className="text-2xl text-gray-400" />
             </div>
             <h3 className="text-xl font-semibold text-gray-900 mb-3">
-              {isScanning ? 'Scanning in Progress...' : 'Ready to Analyze'}
+              {isScanning ? 'Scanning in Progress...' : isDataAvailable ? 'Previous Scan Available' : 'Ready to Analyze'}
             </h3>
             <p className="text-gray-600 mb-6">
               {isScanning
                 ? `Analyzing your disk space usage... ${scanStatus.currentPath ? `Currently scanning: ${scanStatus.currentPath}` : ''}`
-                : 'Click "Scan Entire Disk" to analyze your complete storage or "Choose Folder" to scan a specific directory'
+                : isDataAvailable 
+                  ? `Scan data from ${lastScanTime ? new Date(lastScanTime).toLocaleString() : 'previous session'} is available. View results or run a new scan to refresh the data.`
+                  : 'Click "Scan Entire Disk" to analyze your complete storage or "Choose Folder" to scan a specific directory'
               }
             </p>
             
@@ -299,23 +278,44 @@ const Dashboard = () => {
               <div className="flex items-center space-x-2">
                 <FileText className="w-4 h-4 text-gray-400" />
                 <span>
-                  Files Analyzed: <span className="font-medium">{(scanStatus?.filesAnalyzed || 0).toLocaleString()}</span>
+                  Files Analyzed: <span className="font-medium">
+                    {isScanning 
+                      ? (scanStatus?.filesAnalyzed || 0).toLocaleString()
+                      : isDataAvailable && scanData
+                        ? (scanData.total_files || 0).toLocaleString()
+                        : '0'
+                    }
+                  </span>
                 </span>
               </div>
               <div className="flex items-center space-x-2">
                 <Database className="w-4 h-4 text-gray-400" />
                 <span>
-                  Total Size: <span className="font-medium">{formatSize(scanStatus?.totalSize || 0)}</span>
+                  Total Size: <span className="font-medium">
+                    {isScanning 
+                      ? formatSize(scanStatus?.totalSize || 0)
+                      : isDataAvailable && scanData
+                        ? formatSize(scanData.total_size || 0)
+                        : '0 bytes'
+                    }
+                  </span>
                 </span>
               </div>
-              {isScanning && scanStatus.currentPath && (
+              {isScanning && scanStatus.currentPath ? (
                 <div className="flex items-center space-x-2">
                   <HardDrive className="w-4 h-4 text-blue-400" />
                   <span className="text-blue-600 font-medium">
                     Scanning...
                   </span>
                 </div>
-              )}
+              ) : isDataAvailable && scanData ? (
+                <div className="flex items-center space-x-2">
+                  <HardDrive className="w-4 h-4 text-green-400" />
+                  <span className="text-green-600 font-medium">
+                    Data Available
+                  </span>
+                </div>
+              ) : null}
             </div>
             
             {/* Informations supplémentaires pendant le scan */}
@@ -324,6 +324,20 @@ const Dashboard = () => {
                 <div className="text-xs text-blue-700 truncate">
                   📂 {scanStatus.currentPath}
                 </div>
+              </div>
+            )}
+
+            {/* Actions disponibles quand des données existent */}
+            {!isScanning && isDataAvailable && (
+              <div className="mt-6 flex justify-center space-x-3">
+                <Button
+                  onClick={() => setLocation('/scan-results')}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                  size="sm"
+                >
+                  <ChartPie className="w-4 h-4 mr-2" />
+                  View Results
+                </Button>
               </div>
             )}
           </div>
@@ -336,21 +350,21 @@ const Dashboard = () => {
           <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center mx-auto mb-4">
             <Search className="icon-blue" />
           </div>
-          <h3 className="font-semibold text-gray-900 mb-2">Deep Analysis</h3>
+          <h3 className="font-semibold text-gray-900 mb-2">Scan Results</h3>
           <p className="text-sm text-gray-600">Scan files and folders to identify space usage patterns</p>
         </div>
         <div className="feature-card">
           <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center mx-auto mb-4">
             <BarChart3 className="icon-green" />
           </div>
-          <h3 className="font-semibold text-gray-900 mb-2">Visual Reports</h3>
-          <p className="text-sm text-gray-600">Interactive charts and graphs for easy understanding</p>
+          <h3 className="font-semibold text-gray-900 mb-2">Space Cleanup</h3>
+          <p className="text-sm text-gray-600">Identify large files and folders for easy cleanup</p>
         </div>
         <div className="feature-card">
           <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center mx-auto mb-4">
             <Fan className="icon-purple" />
           </div>
-          <h3 className="font-semibold text-gray-900 mb-2">Space Cleanup</h3>
+          <h3 className="font-semibold text-gray-900 mb-2">Erroring</h3>
           <p className="text-sm text-gray-600">Identify large files and folders for easy cleanup</p>
         </div>
       </div>

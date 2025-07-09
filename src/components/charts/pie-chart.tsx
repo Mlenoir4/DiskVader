@@ -10,16 +10,18 @@ interface CustomPieChartProps {
   data: PieChartData[];
   height?: number;
   showLegend?: boolean;
+  formatValue?: (value: number, payload?: any) => string;
 }
 
-const CustomPieChart = ({ data, height = 300, showLegend = true }: CustomPieChartProps) => {
+const CustomPieChart = ({ data, height = 300, showLegend = true, formatValue }: CustomPieChartProps) => {
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
       const data = payload[0].payload;
+      const displayValue = formatValue ? formatValue(data.value, data) : `${data.value.toFixed(1)} GB`;
       return (
         <div className="bg-white p-3 border border-gray-200 rounded-lg shadow-lg">
           <p className="font-medium">{data.name}</p>
-          <p className="text-sm text-gray-600">{data.value.toFixed(1)} GB</p>
+          <p className="text-sm text-gray-600">{displayValue}</p>
         </div>
       );
     }
