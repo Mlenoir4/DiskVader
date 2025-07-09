@@ -20,6 +20,18 @@ const Dashboard = () => {
   const { addToast } = useToast();
   const { clearAllData, saveScanResults, isDataAvailable, lastScanTime, scanData } = useScanContext();
 
+  // Debug log pour voir l'état des données
+  useEffect(() => {
+    console.log('Dashboard: Context state changed:', {
+      isDataAvailable,
+      scanData: scanData ? {
+        total_files: scanData.total_files,
+        scan_path: scanData.scan_path
+      } : null,
+      lastScanTime: lastScanTime ? new Date(lastScanTime).toLocaleString() : null
+    });
+  }, [isDataAvailable, scanData, lastScanTime]);
+
   useEffect(() => {
     const unlisten = listen('scan_progress', (event) => {
       const payload = event.payload as any;

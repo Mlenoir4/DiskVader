@@ -85,6 +85,7 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Charger les données depuis localStorage au démarrage
   useEffect(() => {
+    console.log('ScanContext: Loading data from localStorage...');
     try {
       const savedScanData = localStorage.getItem(STORAGE_KEYS.SCAN_DATA);
       const savedLargestFiles = localStorage.getItem(STORAGE_KEYS.LARGEST_FILES);
@@ -92,21 +93,41 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const savedFileTypeDistribution = localStorage.getItem(STORAGE_KEYS.FILE_TYPE_DISTRIBUTION);
       const savedLastScanTime = localStorage.getItem(STORAGE_KEYS.LAST_SCAN_TIME);
 
+      console.log('ScanContext: Found saved data:', {
+        scanData: !!savedScanData,
+        largestFiles: !!savedLargestFiles,
+        folders: !!savedFolders,
+        fileTypeDistribution: !!savedFileTypeDistribution,
+        lastScanTime: !!savedLastScanTime
+      });
+
       if (savedScanData) {
-        setScanDataState(JSON.parse(savedScanData));
+        const parsedScanData = JSON.parse(savedScanData);
+        console.log('ScanContext: Loaded scan data:', parsedScanData);
+        setScanDataState(parsedScanData);
       }
       if (savedLargestFiles) {
-        setLargestFilesState(JSON.parse(savedLargestFiles));
+        const parsedFiles = JSON.parse(savedLargestFiles);
+        console.log('ScanContext: Loaded largest files:', parsedFiles.length);
+        setLargestFilesState(parsedFiles);
       }
       if (savedFolders) {
-        setFoldersState(JSON.parse(savedFolders));
+        const parsedFolders = JSON.parse(savedFolders);
+        console.log('ScanContext: Loaded folders:', parsedFolders.length);
+        setFoldersState(parsedFolders);
       }
       if (savedFileTypeDistribution) {
-        setFileTypeDistributionState(JSON.parse(savedFileTypeDistribution));
+        const parsedDistribution = JSON.parse(savedFileTypeDistribution);
+        console.log('ScanContext: Loaded file type distribution:', parsedDistribution.length);
+        setFileTypeDistributionState(parsedDistribution);
       }
       if (savedLastScanTime) {
-        setLastScanTime(JSON.parse(savedLastScanTime));
+        const parsedTime = JSON.parse(savedLastScanTime);
+        console.log('ScanContext: Loaded last scan time:', new Date(parsedTime).toLocaleString());
+        setLastScanTime(parsedTime);
       }
+      
+      console.log('ScanContext: Data loading completed');
     } catch (error) {
       console.error('Error loading data from localStorage:', error);
     }
@@ -162,6 +183,19 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const isDataAvailable = scanData !== null && scanData.total_files > 0;
+  
+  // Debug log pour isDataAvailable
+  useEffect(() => {
+    console.log('ScanContext: isDataAvailable changed:', {
+      isDataAvailable,
+      scanData: scanData ? {
+        total_files: scanData.total_files,
+        scan_path: scanData.scan_path,
+        timestamp: scanData.timestamp
+      } : null,
+      lastScanTime: lastScanTime ? new Date(lastScanTime).toLocaleString() : null
+    });
+  }, [isDataAvailable, scanData, lastScanTime]);
 
   const value: ScanContextType = {
     scanData,

@@ -7,20 +7,17 @@ import CustomDoughnutChart from "../components/charts/doughnut-chart";
 import TreeMapChart from "../components/charts/treemap-chart";
 import CustomLineChart from "../components/charts/line-chart";
 import LargeFilesModal from "../components/ui/large-files-modal";
-
+import { useScanContext } from "../contexts/scan-context";
+import { useLocation } from "wouter";
 import { useToast } from "../components/ui/toast-provider";
 import { invoke } from "@tauri-apps/api/core";
 
 const VisualReports = () => {
-  const [scanData, setScanData] = useState<any>(null);
   const [doughnutData, setDoughnutData] = useState<any[]>([]);
   const [trendData, setTrendData] = useState<any[]>([]);
-  const [largestFiles, setLargestFiles] = useState<any[]>([]);
-  const [folders, setFolders] = useState<any[]>([]);
-  const [fileTypeDistribution, setFileTypeDistribution] = useState<any[]>([]);
   const [chartType, setChartType] = useState<'pie' | 'treemap'>('pie');
   const [timeFilter, setTimeFilter] = useState<'7D' | '30D' | '90D'>('30D');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [isLargeFilesModalOpen, setIsLargeFilesModalOpen] = useState(false);
@@ -28,34 +25,48 @@ const VisualReports = () => {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [fileTypeModalOpen, setFileTypeModalOpen] = useState(false);
   const { addToast } = useToast();
+  const [, setLocation] = useLocation();
+  
+  // Utiliser les données du contexte
+  const { 
+    scanData, 
+    largestFiles, 
+    folders, 
+    fileTypeDistribution, 
+    isDataAvailable,
+    saveScanResults
+  } = useScanContext();
+
+  // Rediriger vers le dashboard si aucune donnée n'est disponible
+  useEffect(() => {
+    if (!isDataAvailable) {
+      addToast({
+        type: 'info',
+        title: 'No Data Available',
+        message: 'Please run a scan first to view visual reports.'
+      });
+      setLocation('/');
+    }
+  }, [isDataAvailable, addToast, setLocation]);
+
   useEffect(() => {
     const loadData = async () => {
+      if (!isDataAvailable) return;
+      
       try {
         setLoading(true);
         
-        // Tous les appels passent par le backend Rust
+        // Charger seulement les données supplémentaires nécessaires pour les graphiques
         const [
-          scanResults,
           doughnutResults,
-          trendResults,
-          filesResults,
-          foldersResults,
-          fileTypesResults
+          trendResults
         ] = await Promise.all([
-          invoke("get_scan_results"),
           invoke("get_doughnut_data"),
-          invoke("get_trend_data", { period: timeFilter }),
-          invoke("get_largest_files"),
-          invoke("get_folders"),
-          invoke("get_file_type_distribution")
+          invoke("get_trend_data", { period: timeFilter })
         ]);
 
-        setScanData(scanResults);
         setDoughnutData(doughnutResults as any[]);
         setTrendData(trendResults as any[]);
-        setLargestFiles(filesResults as any[]);
-        setFolders(foldersResults as any[]);
-        setFileTypeDistribution(fileTypesResults as any[]);
         
       } catch (error) {
         console.error('Error loading data:', error);
@@ -130,12 +141,16 @@ const VisualReports = () => {
         invoke("get_file_type_distribution")
       ]);
 
-      setScanData(newScanData);
+      // Sauvegarder toutes les données dans le contexte
+      saveScanResults(
+        newScanData as any,
+        newLargestFiles as any,
+        newFolders as any,
+        newFileTypes as any
+      );
+      
       setDoughnutData(newDoughnutData as any[]);
       setTrendData(newTrendData as any[]);
-      setLargestFiles(newLargestFiles as any[]);
-      setFolders(newFolders as any[]);
-      setFileTypeDistribution(newFileTypes as any[]);
       
       addToast({
         type: 'success',
@@ -179,38 +194,9 @@ const VisualReports = () => {
     setSortField(field);
     setSortDirection(newDirection);
     
-    const sortedFolders = [...folders].sort((a, b) => {
-      let aValue, bValue;
-      
-      switch (field) {
-        case 'name':
-          aValue = a.name.toLowerCase();
-          bValue = b.name.toLowerCase();
-          break;
-        case 'size':
-          aValue = a.size;
-          bValue = b.size;
-          break;
-        case 'files':
-          aValue = a.file_count;
-          bValue = b.file_count;
-          break;
-        case 'percentage':
-          aValue = a.percentage;
-          bValue = b.percentage;
-          break;
-        default:
-          return 0;
-      }
-      
-      if (newDirection === 'asc') {
-        return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
-      } else {
-        return aValue > bValue ? -1 : aValue < bValue ? 1 : 0;
-      }
-    });
-    
-    setFolders(sortedFolders);
+    // Note: Le tri est fait côté UI pour l'affichage seulement
+    // Les données restent inchangées dans le contexte
+    console.log(`Sorting by ${field} in ${newDirection} order`);
   };
 
   if (loading) {
@@ -224,14 +210,21 @@ const VisualReports = () => {
     );
   }
 
-  if (!scanData) {
+  // Si aucune donnée n'est disponible, afficher un message
+  if (!isDataAvailable) {
     return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="text-center">
-          <Database className="w-12 h-12 mx-auto mb-4 text-gray-400" />
-          <p className="text-gray-600">No scan data available</p>
-          <Button onClick={handleRefreshData} className="mt-4">
-            Start New Scan
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="text-center py-12">
+          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Database className="w-8 h-8 text-gray-400" />
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">No Data Available</h2>
+          <p className="text-gray-600 mb-6">Please run a scan first to view visual reports.</p>
+          <Button
+            onClick={() => setLocation('/')}
+            className="bg-black text-white hover:bg-gray-800"
+          >
+            Go to Dashboard
           </Button>
         </div>
       </div>
@@ -282,7 +275,7 @@ const VisualReports = () => {
             <FileText className="icon-blue" />
             <span className="text-sm font-medium text-gray-600">Total Files</span>
           </div>
-          <div className="text-2xl font-bold text-gray-900">{(scanData.total_files || scanData.totalFiles || 0).toLocaleString()}</div>
+          <div className="text-2xl font-bold text-gray-900">{((scanData?.total_files || 0)).toLocaleString()}</div>
           <div className="text-sm text-green-600 flex items-center">
             <ArrowUp className="w-3 h-3 mr-1" />
             +12% from last scan
@@ -293,7 +286,7 @@ const VisualReports = () => {
             <Database className="icon-green" />
             <span className="text-sm font-medium text-gray-600">Total Size</span>
           </div>
-          <div className="text-2xl font-bold text-gray-900">{formatSize(scanData.total_size || scanData.totalSize || 0)}</div>
+          <div className="text-2xl font-bold text-gray-900">{formatSize(scanData?.total_size || 0)}</div>
           <div className="text-sm text-green-600 flex items-center">
             <ArrowUp className="w-3 h-3 mr-1" />
             +5.2 GB since last scan
@@ -305,15 +298,15 @@ const VisualReports = () => {
             <span className="text-sm font-medium text-gray-600">Largest Folder</span>
           </div>
           <div className="text-2xl font-bold text-gray-900">{folders.length > 0 ? folders[0].name : 'N/A'}</div>
-          <div className="text-sm text-gray-600">{folders.length > 0 ? formatSize(folders[0].size || folders[0].total_size || 0) : 'N/A'}</div>
+          <div className="text-sm text-gray-600">{folders.length > 0 ? formatSize(folders[0].size || 0) : 'N/A'}</div>
         </Card>
         <Card className="stats-card">
           <div className="flex items-center space-x-3 mb-2">
             <HardDrive className="icon-purple" />
             <span className="text-sm font-medium text-gray-600">Free Space</span>
           </div>
-          <div className="text-2xl font-bold text-gray-900">{formatSize(scanData.free_space || 0)}</div>
-          <div className="text-sm text-gray-600">{(100 - (scanData.used_percentage || 0)).toFixed(1)}% remaining</div>
+          <div className="text-2xl font-bold text-gray-900">{formatSize(scanData?.free_space || 0)}</div>
+          <div className="text-sm text-gray-600">{(100 - (scanData?.used_percentage || 0)).toFixed(1)}% remaining</div>
         </Card>
       </div>
 
@@ -350,19 +343,121 @@ const VisualReports = () => {
                 <CustomDoughnutChart 
                   data={doughnutData} 
                   height={320}
-                  centerText={formatSize(scanData.total_size || scanData.totalSize || 0)}
+                  centerText={formatSize(scanData?.total_size || 0)}
                   centerSubText="Used Space"
                 />
               ) : (
-                <TreeMapChart 
-                  data={doughnutData} 
-                  height={320}
-                  showLegend={true}
-                />
+                // Treemap proportionnel basé sur les vraies données
+                <div className="h-full">
+                  {fileTypeDistribution && fileTypeDistribution.length > 0 ? (
+                    <div className="h-full p-2">
+                      {(() => {
+                        const totalSize = scanData?.total_size || 1;
+                        const sortedTypes = [...fileTypeDistribution]
+                          .sort((a, b) => b.size - a.size)
+                          .slice(0, 8); // Top 8 types de fichiers
+
+                        // Algorithme de treemap plus précis basé sur les pourcentages réels
+                        const createProportionalTreemap = (items: any[]) => {
+                          const colors = [
+                            'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
+                            'bg-red-500', 'bg-indigo-500', 'bg-pink-500', 'bg-gray-500'
+                          ];
+
+                          return items.map((item, index) => {
+                            const percentage = (item.size / totalSize) * 100;
+                            
+                            // Calculer la hauteur et largeur basées sur le pourcentage réel
+                            let width, height;
+                            if (percentage >= 40) {
+                              width = '50%'; height = '50%';
+                            } else if (percentage >= 25) {
+                              width = '50%'; height = '25%';
+                            } else if (percentage >= 15) {
+                              width = '25%'; height = '50%';
+                            } else if (percentage >= 10) {
+                              width = '25%'; height = '25%';
+                            } else {
+                              width = `${Math.max(percentage * 2, 8)}%`; 
+                              height = `${Math.max(percentage * 2, 8)}%`;
+                            }
+
+                            return {
+                              ...item,
+                              percentage,
+                              color: colors[index % colors.length],
+                              width,
+                              height,
+                              // Ajustement pour éviter le chevauchement
+                              style: {
+                                width,
+                                height,
+                                minWidth: '60px',
+                                minHeight: '40px'
+                              }
+                            };
+                          });
+                        };
+
+                        const layoutItems = createProportionalTreemap(sortedTypes);
+
+                        return (
+                          <div className="grid grid-cols-8 grid-rows-6 gap-1 h-full">
+                            {layoutItems.map((item, index) => {
+                              // Calculer l'occupation de la grille en fonction du pourcentage
+                              const getGridSpan = (percentage: number) => {
+                                if (percentage >= 35) return 'col-span-4 row-span-3'; // Très gros: 50% de l'espace
+                                if (percentage >= 20) return 'col-span-3 row-span-2'; // Gros: ~25% de l'espace
+                                if (percentage >= 12) return 'col-span-2 row-span-2'; // Moyen: ~16% de l'espace
+                                if (percentage >= 8) return 'col-span-2 row-span-1'; // Petit: ~8% de l'espace
+                                if (percentage >= 4) return 'col-span-1 row-span-2'; // Très petit vertical
+                                return 'col-span-1 row-span-1'; // Minuscule
+                              };
+
+                              const gridClass = getGridSpan(item.percentage);
+
+                              return (
+                                <div
+                                  key={index}
+                                  className={`${item.color} text-white rounded-lg p-2 flex flex-col justify-between transition-all hover:scale-105 cursor-pointer ${gridClass}`}
+                                  title={`${item.type}: ${formatSize(item.size)} (${item.percentage.toFixed(1)}%)`}
+                                >
+                                  <div>
+                                    <div className="text-xs font-medium opacity-90 truncate">
+                                      {item.type}
+                                    </div>
+                                    <div className="text-xs opacity-75">
+                                      {item.count?.toLocaleString()} files
+                                    </div>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className="text-sm font-bold">
+                                      {formatSize(item.size)}
+                                    </div>
+                                    <div className="text-xs opacity-75">
+                                      {item.percentage.toFixed(1)}%
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-gray-500">
+                      <div className="text-center">
+                        <HardDrive className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                        <p>No data available for treemap visualization</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             <div className="mt-4 text-sm text-gray-600 text-center">
-              {chartType === 'pie' ? 'Interactive pie chart visualization' : 'Interactive treemap visualization'}
+              {chartType === 'pie' ? 'Interactive pie chart visualization' : 'Proportional treemap based on file type sizes'}
             </div>
           </CardContent>
         </Card>
@@ -389,18 +484,18 @@ const VisualReports = () => {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
                       <div className="w-3 h-3 rounded" style={{ backgroundColor: item.color }}></div>
-                      <span className="text-sm font-medium">{item.file_type || item.type}</span>
+                      <span className="text-sm font-medium">{item.type}</span>
                     </div>
                     <div className="flex items-center space-x-4">
                       <div className="text-sm text-gray-900">{formatSize(item.size)}</div>
-                      <div className="text-sm text-gray-600">{(((item.size / (scanData.total_size || scanData.totalSize || 1)) * 100) || 0).toFixed(1)}%</div>
+                      <div className="text-sm text-gray-600">{(((item.size / (scanData?.total_size || 1)) * 100) || 0).toFixed(1)}%</div>
                     </div>
                   </div>
                   <div className="progress-bar w-full mt-2">
                     <div 
                       className="progress-fill" 
                       style={{ 
-                        width: `${(((item.size / (scanData.total_size || scanData.totalSize || 1)) * 100) || 0).toFixed(1)}%`,
+                        width: `${(((item.size / (scanData?.total_size || 1)) * 100) || 0).toFixed(1)}%`,
                         backgroundColor: item.color 
                       }}
                     />
@@ -585,8 +680,8 @@ const VisualReports = () => {
                       <span className="font-medium text-gray-900">{folder.name}</span>
                     </div>
                   </TableCell>
-                  <TableCell>{formatSize(folder.size || folder.total_size || 0)}</TableCell>
-                  <TableCell>{(folder.file_count || folder.fileCount || 0).toLocaleString()}</TableCell>
+                  <TableCell>{formatSize(folder.size || 0)}</TableCell>
+                  <TableCell>{(folder.file_count || 0).toLocaleString()}</TableCell>
                   <TableCell>{folder.percentage?.toFixed(1)}%</TableCell>
                   <TableCell>
                     <Button variant="ghost" size="sm" className="text-blue-600 hover:text-blue-800">
@@ -612,7 +707,7 @@ const VisualReports = () => {
         isOpen={fileTypeModalOpen}
         onClose={() => setFileTypeModalOpen(false)}
         fileTypes={fileTypeDistribution}
-        totalSize={scanData?.total_size || scanData?.totalSize || 0}
+        totalSize={scanData?.total_size || 0}
       />
     </div>
   );
@@ -659,11 +754,10 @@ const FileTypeDistributionModal = ({
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center space-x-3">
                   <div className="w-4 h-4 rounded" style={{ backgroundColor: item.color }}></div>
-                  <span className="font-medium">{item.file_type || item.type}</span>
+                  <span className="font-medium">{item.type}</span>
                 </div>
                 <div className="flex items-center space-x-6">
-                  <div className="text-sm font-medium">{formatSize(item.size)}</div>
-                  <div className="text-sm text-gray-600">
+                  <div className="text-sm font-medium">{formatSize(item.size)}</div>                      <div className="text-sm text-gray-600">
                     {(((item.size / totalSize) * 100) || 0).toFixed(1)}%
                   </div>
                 </div>
@@ -677,9 +771,9 @@ const FileTypeDistributionModal = ({
                   }}
                 />
               </div>
-              {item.file_count && (
+              {item.count && (
                 <div className="text-xs text-gray-500 mt-2">
-                  {item.file_count.toLocaleString()} files
+                  {item.count.toLocaleString()} files
                 </div>
               )}
             </div>

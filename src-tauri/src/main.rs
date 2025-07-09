@@ -10,6 +10,9 @@ use std::time::Instant;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use tauri::State;
+use std::sync::mpsc;
+use std::thread;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 #[derive(Clone, Serialize)]
 struct ScanProgress {
@@ -110,9 +113,43 @@ struct ScanResults {
     scan_time: f32,
     scan_path: String,
     largest_files: Vec<ScannedFile>,
-    folders: Vec<ScannedFolder>, // Top 10 folders for compatibility
-    all_folders: Vec<ScannedFolder>, // All folders scanned
-    file_type_distribution: HashMap<String, (u64, u32)>, // (size, count)
+    folders: Vec<ScannedFolder>,
+    all_folders: Vec<ScannedFolder>,
+    file_type_distribution: HashMap<String, (u64, u32)>,
+}
+
+// Structure pour les compteurs atomiques partagés entre threads
+#[derive(Clone)]
+struct AtomicCounters {
+    files_analyzed: Arc<AtomicU32>,
+    total_size: Arc<AtomicU64>,
+    folder_count: Arc<AtomicU32>,
+}
+
+impl AtomicCounters {
+    fn new() -> Self {
+        Self {
+            files_analyzed: Arc::new(AtomicU32::new(0)),
+            total_size: Arc::new(AtomicU64::new(0)),
+            folder_count: Arc::new(AtomicU32::new(0)),
+        }
+    }
+    
+    fn get_values(&self) -> (u32, u64, u32) {
+        (
+            self.files_analyzed.load(Ordering::Relaxed),
+            self.total_size.load(Ordering::Relaxed),
+            self.folder_count.load(Ordering::Relaxed),
+        )
+    }
+}
+
+// Structure pour les résultats collectés par les threads
+#[derive(Debug)]
+struct ThreadScanResult {
+    files: Vec<ScannedFile>,
+    folders: Vec<ScannedFolder>,
+    file_type_distribution: HashMap<String, (u64, u32)>,
 }
 
 type SharedScanResults = Arc<Mutex<ScanResults>>;
@@ -129,7 +166,7 @@ async fn select_folder(app: tauri::AppHandle) -> Result<Option<String>, String> 
 
 #[tauri::command]
 async fn start_scan(app: tauri::AppHandle, path: String, scan_results: State<'_, SharedScanResults>) -> Result<(), String> {
-    println!("Starting real scan on: {}", path);
+    println!("Starting multithreaded scan on: {}", path);
     
     let scan_path = Path::new(&path);
     if !scan_path.exists() {
@@ -148,91 +185,228 @@ async fn start_scan(app: tauri::AppHandle, path: String, scan_results: State<'_,
     }
     
     let start_time = Instant::now();
-    let mut files_analyzed = 0u32;
-    let mut total_size = 0u64;
-    let mut folder_count = 0u32;
-    let mut largest_files = Vec::new();
-    let mut folder_sizes: HashMap<PathBuf, (u64, u32)> = HashMap::new();
-    let mut file_type_distribution: HashMap<String, (u64, u32)> = HashMap::new();
     
-    match scan_directory_recursive(
-        &app, 
-        scan_path, 
-        &mut files_analyzed, 
-        &mut total_size, 
-        &mut folder_count,
-        &mut largest_files,
-        &mut folder_sizes,
-        &mut file_type_distribution
-    ).await {
-        Ok(_) => {
+    // Initialiser les compteurs atomiques
+    let counters = AtomicCounters::new();
+    
+    // Démarrer le scan multithread
+    match scan_directory_multithreaded(&app, scan_path, counters.clone()).await {
+        Ok(thread_results) => {
             let elapsed = start_time.elapsed().as_secs_f32();
-            println!("Scan completed in {:.2} seconds", elapsed);
-            println!("Total files analyzed: {}", files_analyzed);
-            println!("Total size: {} bytes", total_size);
+            let (total_files, total_size, total_folders) = counters.get_values();
             
-            // Store results
+            println!("Multithreaded scan completed in {:.2} seconds", elapsed);
+            println!("Total files analyzed: {}", total_files);
+            println!("Total size: {} bytes", total_size);
+            println!("Total folders: {}", total_folders);
+            
+            // Consolider les résultats de tous les threads
+            let mut all_files = Vec::new();
+            let mut all_folders = Vec::new();
+            let mut combined_file_type_distribution: HashMap<String, (u64, u32)> = HashMap::new();
+            
+            for result in thread_results {
+                all_files.extend(result.files);
+                all_folders.extend(result.folders);
+                
+                // Combiner les distributions de types de fichiers
+                for (file_type, (size, count)) in result.file_type_distribution {
+                    let entry = combined_file_type_distribution.entry(file_type).or_insert((0, 0));
+                    entry.0 += size;
+                    entry.1 += count;
+                }
+            }
+            
+            // Trier les fichiers par taille décroissante
+            all_files.sort_by(|a, b| b.size.cmp(&a.size));
+            all_folders.sort_by(|a, b| b.size.cmp(&a.size));
+            
+            // Stocker les résultats consolidés
             {
                 let mut results = scan_results.lock().unwrap();
-                results.total_files = files_analyzed;
-                results.total_folders = folder_count;
+                results.total_files = total_files;
+                results.total_folders = total_folders;
                 results.total_size = total_size;
                 results.scan_time = elapsed;
-                
-                // Keep only top 20 largest files
-                largest_files.sort_by(|a, b| b.size.cmp(&a.size));
-                largest_files.truncate(20);
-                results.largest_files = largest_files;
-                
-                // Convert folder sizes to ScannedFolder
-                let mut all_folders: Vec<_> = folder_sizes.into_iter()
-                    .map(|(path, (size, count))| ScannedFolder {
-                        name: path.file_name().unwrap_or_else(|| path.as_os_str()).to_string_lossy().to_string(),
-                        path,
-                        size,
-                        file_count: count,
-                    })
-                    .filter(|folder| folder.size > 0 && folder.file_count > 0) // Filtrer les dossiers vides
-                    .collect();
-                all_folders.sort_by(|a, b| b.size.cmp(&a.size));
-                
-                // Store all folders
+                results.largest_files = all_files;
                 results.all_folders = all_folders.clone();
-                
-                // Keep only top 10 for compatibility with existing frontend
-                all_folders.truncate(10);
                 results.folders = all_folders;
-                
-                results.file_type_distribution = file_type_distribution;
+                results.file_type_distribution = combined_file_type_distribution;
             }
             
             Ok(())
         }
-        Err(e) => Err(format!("Scan failed: {}", e))
+        Err(e) => Err(format!("Multithreaded scan failed: {}", e))
     }
 }
 
-async fn scan_directory_recursive(
+// Fonction principale de scan multithread
+async fn scan_directory_multithreaded(
     app: &tauri::AppHandle,
-    dir_path: &Path,
-    files_analyzed: &mut u32,
-    total_size: &mut u64,
-    folder_count: &mut u32,
-    largest_files: &mut Vec<ScannedFile>,
-    folder_sizes: &mut HashMap<PathBuf, (u64, u32)>,
+    root_path: &Path,
+    counters: AtomicCounters,
+) -> Result<Vec<ThreadScanResult>, Box<dyn std::error::Error + Send + Sync>> {
+    println!("Starting multithreaded directory scan");
+    
+    // Déterminer le nombre de threads à utiliser (nombre de CPU logiques)
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(8); // Limiter à 8 threads maximum pour éviter la surcharge
+    
+    println!("Using {} threads for scanning", num_threads);
+    
+    // Channel pour collecter les résultats des threads
+    let (result_tx, result_rx) = mpsc::channel::<ThreadScanResult>();
+    
+    // Channel pour distribuer les tâches aux threads
+    let (task_tx, task_rx) = mpsc::channel::<PathBuf>();
+    let task_rx = Arc::new(Mutex::new(task_rx));
+    
+    // Cloner l'app handle pour les threads
+    let app_handle = app.clone();
+    
+    // Démarrer les threads de travail
+    let mut handles = Vec::new();
+    for thread_id in 0..num_threads {
+        let task_rx = Arc::clone(&task_rx);
+        let result_tx = result_tx.clone();
+        let counters = counters.clone();
+        let app_clone = app_handle.clone();
+        
+        let handle = thread::spawn(move || {
+            worker_thread(thread_id, task_rx, result_tx, counters, app_clone);
+        });
+        handles.push(handle);
+    }
+    
+    // Fermer le sender principal
+    drop(result_tx);
+    
+    // Lancer la découverte initiale des dossiers
+    let discovery_task_tx = task_tx.clone();
+    let root_path_buf = root_path.to_path_buf();
+    
+    thread::spawn(move || {
+        discover_directories(root_path_buf, discovery_task_tx);
+    });
+    
+    // Fermer le channel de tâches après avoir ajouté la racine
+    drop(task_tx);
+    
+    // Attendre que tous les threads se terminent
+    for handle in handles {
+        if let Err(e) = handle.join() {
+            println!("Thread panicked: {:?}", e);
+        }
+    }
+    
+    // Collecter tous les résultats
+    let mut all_results = Vec::new();
+    while let Ok(result) = result_rx.try_recv() {
+        all_results.push(result);
+    }
+    
+    println!("Collected results from {} thread(s)", all_results.len());
+    Ok(all_results)
+}
+
+// Fonction pour découvrir récursivement tous les dossiers
+fn discover_directories(root_path: PathBuf, task_tx: mpsc::Sender<PathBuf>) {
+    let mut directories_to_explore = vec![root_path];
+    
+    while let Some(current_dir) = directories_to_explore.pop() {
+        // Envoyer le dossier courant pour traitement
+        if task_tx.send(current_dir.clone()).is_err() {
+            break; // Le receiver a été fermé
+        }
+        
+        // Découvrir les sous-dossiers
+        if let Ok(entries) = fs::read_dir(&current_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    directories_to_explore.push(path);
+                }
+            }
+        }
+    }
+}
+
+// Fonction de travail pour chaque thread
+fn worker_thread(
+    thread_id: usize,
+    task_rx: Arc<Mutex<mpsc::Receiver<PathBuf>>>,
+    result_tx: mpsc::Sender<ThreadScanResult>,
+    counters: AtomicCounters,
+    app: tauri::AppHandle,
+) {
+    println!("Worker thread {} started", thread_id);
+    
+    let mut thread_files = Vec::new();
+    let mut thread_folders = Vec::new();
+    let mut thread_file_type_distribution: HashMap<String, (u64, u32)> = HashMap::new();
+    let mut progress_counter = 0u32;
+    
+    loop {
+        // Recevoir une tâche
+        let directory = {
+            let rx = task_rx.lock().unwrap();
+            match rx.recv() {
+                Ok(dir) => dir,
+                Err(_) => break, // Plus de tâches
+            }
+        };
+        
+        // Scanner le dossier
+        if let Err(e) = scan_single_directory(
+            &directory,
+            &mut thread_files,
+            &mut thread_folders,
+            &mut thread_file_type_distribution,
+            &counters,
+            &app,
+            &mut progress_counter,
+        ) {
+            println!("Thread {} error scanning {:?}: {}", thread_id, directory, e);
+        }
+    }
+    
+    // Envoyer les résultats de ce thread
+    let result = ThreadScanResult {
+        files: thread_files,
+        folders: thread_folders,
+        file_type_distribution: thread_file_type_distribution,
+    };
+    
+    if result_tx.send(result).is_err() {
+        println!("Thread {} failed to send results", thread_id);
+    }
+    
+    println!("Worker thread {} finished", thread_id);
+}
+
+// Fonction pour scanner un seul dossier (thread-safe)
+fn scan_single_directory(
+    dir_path: &PathBuf,
+    thread_files: &mut Vec<ScannedFile>,
+    thread_folders: &mut Vec<ScannedFolder>,
     file_type_distribution: &mut HashMap<String, (u64, u32)>,
+    counters: &AtomicCounters,
+    app: &tauri::AppHandle,
+    progress_counter: &mut u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let entries = match fs::read_dir(dir_path) {
         Ok(entries) => entries,
         Err(e) => {
             println!("Warning: Cannot read directory {:?}: {}", dir_path, e);
-            return Ok(()); // Continue scanning other directories
+            return Ok(());
         }
     };
     
-    *folder_count += 1;
-    let mut current_folder_size = 0u64;
-    let mut current_folder_files = 0u32;
+    counters.folder_count.fetch_add(1, Ordering::Relaxed);
+    let mut folder_size = 0u64;
+    let mut folder_file_count = 0u32;
     
     for entry in entries {
         let entry = match entry {
@@ -244,18 +418,17 @@ async fn scan_directory_recursive(
         };
         
         let entry_path = entry.path();
-        let current_path_str = entry_path.to_string_lossy().to_string();
         
         if entry_path.is_file() {
             match entry.metadata() {
                 Ok(metadata) => {
                     let file_size = metadata.len();
-                    *files_analyzed += 1;
-                    *total_size += file_size;
-                    current_folder_size += file_size;
-                    current_folder_files += 1;
+                    counters.files_analyzed.fetch_add(1, Ordering::Relaxed);
+                    counters.total_size.fetch_add(file_size, Ordering::Relaxed);
+                    folder_size += file_size;
+                    folder_file_count += 1;
                     
-                    // Get file extension and type
+                    // Traitement du fichier
                     let extension = entry_path.extension()
                         .and_then(|ext| ext.to_str())
                         .unwrap_or("")
@@ -263,14 +436,14 @@ async fn scan_directory_recursive(
                     
                     let file_type = get_file_type(&extension);
                     
-                    // Update file type distribution
+                    // Mise à jour de la distribution des types de fichiers
                     let counter = file_type_distribution.entry(file_type.clone()).or_insert((0, 0));
                     counter.0 += file_size;
                     counter.1 += 1;
                     
-                    // Add to largest files if significant
-                    if file_size > 10_000 { // Files larger than 10KB
-                        largest_files.push(ScannedFile {
+                    // Ajouter aux plus gros fichiers si significatif
+                    if file_size > 10_000 {
+                        thread_files.push(ScannedFile {
                             name: entry_path.file_name()
                                 .unwrap_or_default()
                                 .to_string_lossy()
@@ -282,13 +455,15 @@ async fn scan_directory_recursive(
                         });
                     }
                     
-                    // Emit progress every 100 files to avoid overwhelming the frontend
-                    if *files_analyzed % 100 == 0 {
+                    // Émettre le progrès périodiquement pour éviter de surcharger le frontend
+                    *progress_counter += 1;
+                    if *progress_counter % 500 == 0 {
+                        let (total_files, total_size, _) = counters.get_values();
                         let progress = ScanProgress {
-                            files_analyzed: *files_analyzed,
-                            total_size: *total_size,
-                            current_path: current_path_str.clone(),
-                            progress: 0.0, // We don't know total beforehand for real scanning
+                            files_analyzed: total_files,
+                            total_size,
+                            current_path: dir_path.to_string_lossy().to_string(),
+                            progress: 0.0,
                         };
                         
                         if let Err(e) = app.emit("scan_progress", progress) {
@@ -300,38 +475,21 @@ async fn scan_directory_recursive(
                     println!("Warning: Cannot get metadata for file {:?}: {}", entry_path, e);
                 }
             }
-        } else if entry_path.is_dir() {
-            // Emit progress for directory scanning
-            let progress = ScanProgress {
-                files_analyzed: *files_analyzed,
-                total_size: *total_size,
-                current_path: current_path_str.clone(),
-                progress: 0.0,
-            };
-            
-            if let Err(e) = app.emit("scan_progress", progress) {
-                println!("Warning: Failed to emit progress: {}", e);
-            }
-            
-            // Recursively scan subdirectory
-            Box::pin(scan_directory_recursive(
-                app, 
-                &entry_path, 
-                files_analyzed, 
-                total_size, 
-                folder_count,
-                largest_files,
-                folder_sizes,
-                file_type_distribution
-            )).await?;
         }
-        
-        // Small delay to prevent overwhelming the system and allow UI updates
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
     }
     
-    // Store folder size information
-    folder_sizes.insert(dir_path.to_path_buf(), (current_folder_size, current_folder_files));
+    // Ajouter le dossier aux résultats
+    if folder_size > 0 || folder_file_count > 0 {
+        thread_folders.push(ScannedFolder {
+            name: dir_path.file_name()
+                .unwrap_or_else(|| dir_path.as_os_str())
+                .to_string_lossy()
+                .to_string(),
+            path: dir_path.clone(),
+            size: folder_size,
+            file_count: folder_file_count,
+        });
+    }
     
     Ok(())
 }
@@ -353,7 +511,7 @@ fn get_scan_results(scan_results: State<'_, SharedScanResults>) -> Result<ScanDa
     let results = scan_results.lock().unwrap();
     
     // Get disk space info (this would ideally use a proper disk space library)
-    let free_space = 52200000000u64; // Placeholder - would need proper disk space detection
+    let free_space = 52200000000u64;
     let used_percentage = if results.total_size > 0 {
         (results.total_size as f32 / (results.total_size + free_space) as f32) * 100.0
     } else {
@@ -390,7 +548,7 @@ fn get_largest_files(scan_results: State<'_, SharedScanResults>) -> Result<Vec<F
         })
         .collect();
     
-    file_items.truncate(20); // Limit to top 20
+    file_items.truncate(20);
     Ok(file_items)
 }
 
@@ -535,7 +693,7 @@ fn get_pie_chart_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<
         .enumerate()
         .map(|(index, (file_type, (size, _)))| PieChartDataItem {
             name: file_type.clone(),
-            value: *size as f32 / 1_000_000_000.0, // Convert to GB
+            value: *size as f32 / 1_000_000_000.0,
             color: colors[index % colors.len()].to_string(),
         })
         .filter(|item| item.value > 0.0)
@@ -561,7 +719,7 @@ fn get_doughnut_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<P
         .enumerate()
         .map(|(index, (file_type, (size, _)))| PieChartDataItem {
             name: file_type.clone(),
-            value: *size as f32 / 1_000_000_000.0, // Convert to GB
+            value: *size as f32 / 1_000_000_000.0,
             color: colors[index % colors.len()].to_string(),
         })
         .filter(|item| item.value > 0.0)
