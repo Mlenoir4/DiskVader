@@ -232,7 +232,7 @@ const ScanResults = () => {
             <Clock className="icon-purple" />
             <span className="text-sm font-medium text-gray-600">Scan Time</span>
           </div>
-          <div className="text-2xl font-bold text-gray-900">{scanData?.scan_time || 0}s</div>
+          <div className="text-2xl font-bold text-gray-900">{(scanData?.scan_time || 0).toFixed(2)}s</div>
         </Card>
       </div>
 
