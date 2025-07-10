@@ -14,6 +14,52 @@ use std::sync::mpsc;
 use std::thread;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+#[derive(Debug, thiserror::Error, Serialize)]
+enum CommandError {
+    #[error("Path does not exist: {0}")]
+    PathDoesNotExist(String),
+    #[error("Path is not a directory: {0}")]
+    PathIsNotDirectory(String),
+    #[error("Cannot read directory: {0}")]
+    CannotReadDirectory(String),
+    #[error("Cannot get metadata: {0}")]
+    CannotGetMetadata(String),
+    #[error("Scan failed: {0}")]
+    ScanFailed(String),
+    #[error("Internal error: {0}")]
+    InternalError(String),
+}
+
+impl From<std::io::Error> for CommandError {
+    fn from(err: std::io::Error) -> Self {
+        CommandError::InternalError(err.to_string())
+    }
+}
+
+impl From<std::sync::mpsc::RecvError> for CommandError {
+    fn from(err: std::sync::mpsc::RecvError) -> Self {
+        CommandError::InternalError(err.to_string())
+    }
+}
+
+impl From<Box<dyn std::error::Error + Send + Sync>> for CommandError {
+    fn from(err: Box<dyn std::error::Error + Send + Sync>) -> Self {
+        CommandError::InternalError(err.to_string())
+    }
+}
+
+impl From<std::sync::PoisonError<std::sync::MutexGuard<'_, ScanResults>>> for CommandError {
+    fn from(err: std::sync::PoisonError<std::sync::MutexGuard<'_, ScanResults>>) -> Self {
+        CommandError::InternalError(err.to_string())
+    }
+}
+
+impl From<tauri::Error> for CommandError {
+    fn from(err: tauri::Error) -> Self {
+        CommandError::InternalError(err.to_string())
+    }
+}
+
 #[derive(Clone, Serialize)]
 struct ScanProgress {
     #[serde(rename = "filesAnalyzed")]
@@ -22,7 +68,6 @@ struct ScanProgress {
     total_size: u64,
     #[serde(rename = "currentPath")]
     current_path: String,
-    progress: f32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -161,7 +206,7 @@ struct ThreadScanResult {
 type SharedScanResults = Arc<Mutex<ScanResults>>;
 
 #[tauri::command]
-async fn select_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
+async fn select_folder(app: tauri::AppHandle) -> Result<Option<String>, CommandError> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog().file().pick_folder(move |folder_path| {
         tx.send(folder_path.map(|p| p.to_string()))
@@ -171,16 +216,16 @@ async fn select_folder(app: tauri::AppHandle) -> Result<Option<String>, String> 
 }
 
 #[tauri::command]
-async fn start_scan(app: tauri::AppHandle, path: String, scan_results: State<'_, SharedScanResults>) -> Result<(), String> {
+async fn start_scan(app: tauri::AppHandle, path: String, scan_results: State<'_, SharedScanResults>) -> Result<(), CommandError> {
     println!("Starting multithreaded scan on: {}", path);
     
     let scan_path = Path::new(&path);
     if !scan_path.exists() {
-        return Err(format!("Path does not exist: {}", path));
+        return Err(CommandError::PathDoesNotExist(path));
     }
     
     if !scan_path.is_dir() {
-        return Err(format!("Path is not a directory: {}", path));
+        return Err(CommandError::PathIsNotDirectory(path));
     }
     
     // Reset scan results
@@ -225,7 +270,9 @@ async fn start_scan(app: tauri::AppHandle, path: String, scan_results: State<'_,
             
             // Trier les fichiers par taille décroissante
             all_files.sort_by(|a, b| b.size.cmp(&a.size));
-            all_folders.sort_by(|a, b| b.size.cmp(&a.size));
+
+            // Calculer les tailles récursives des dossiers
+            let all_folders_recursive = calculate_recursive_folder_data(all_folders);
             
             // Stocker les résultats consolidés
             {
@@ -235,15 +282,66 @@ async fn start_scan(app: tauri::AppHandle, path: String, scan_results: State<'_,
                 results.total_size = total_size;
                 results.scan_time = elapsed;
                 results.largest_files = all_files;
-                results.all_folders = all_folders.clone();
-                results.folders = all_folders;
+                results.all_folders = all_folders_recursive.clone();
+                results.folders = all_folders_recursive;
                 results.file_type_distribution = combined_file_type_distribution;
             }
             
             Ok(())
         }
-        Err(e) => Err(format!("Multithreaded scan failed: {}", e))
+        Err(e) => Err(CommandError::ScanFailed(e.to_string()))
     }
+}
+
+// Fonction pour calculer les tailles récursives des dossiers après le scan
+fn calculate_recursive_folder_data(
+    folders: Vec<ScannedFolder>, // These are direct folders with their direct file sizes/counts
+) -> Vec<ScannedFolder> {
+    let mut path_data: HashMap<PathBuf, (u64, u32)> = HashMap::new();
+
+    // Initialize path_data with direct folder sizes and counts
+    // This is the base for recursive aggregation
+    for folder in &folders {
+        path_data.insert(folder.path.clone(), (folder.size, folder.file_count));
+    }
+
+    // Collect all unique folder paths and sort them by depth (deepest first)
+    let mut all_folder_paths: Vec<PathBuf> = path_data.keys().cloned().collect();
+    all_folder_paths.sort_by_key(|p| p.components().count());
+    all_folder_paths.reverse(); // Deepest first
+
+    // Aggregate recursively
+    for folder_path in &all_folder_paths {
+        let (current_folder_recursive_size, current_folder_recursive_count) =
+            path_data.get(folder_path).copied().unwrap_or((0, 0));
+
+        if let Some(parent_path) = folder_path.parent() {
+            let parent_entry = path_data.entry(parent_path.to_path_buf()).or_insert((0, 0));
+            parent_entry.0 += current_folder_recursive_size;
+            parent_entry.1 += current_folder_recursive_count;
+        }
+    }
+
+    // Create new ScannedFolder vector with updated recursive sizes
+    let mut updated_folders = Vec::new();
+    for folder_path in all_folder_paths {
+        if let Some(&(recursive_size, recursive_count)) = path_data.get(&folder_path) {
+            // Find the original ScannedFolder to get its name, or derive it.
+            // For simplicity, we'll derive the name from the path.
+            let name = folder_path.file_name()
+                .unwrap_or_else(|| folder_path.as_os_str())
+                .to_string_lossy()
+                .to_string();
+            updated_folders.push(ScannedFolder {
+                name,
+                path: folder_path,
+                size: recursive_size,
+                file_count: recursive_count,
+            });
+        }
+    }
+    updated_folders.sort_by_key(|f| f.path.clone()); // Sort for consistent output
+    updated_folders
 }
 
 // Fonction principale de scan multithread
@@ -251,7 +349,7 @@ async fn scan_directory_multithreaded(
     app: &tauri::AppHandle,
     root_path: &Path,
     counters: AtomicCounters,
-) -> Result<Vec<ThreadScanResult>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<Vec<ThreadScanResult>, CommandError> {
     println!("Starting multithreaded directory scan");
     
     // Déterminer le nombre de threads à utiliser (nombre de CPU logiques)
@@ -401,18 +499,18 @@ fn scan_single_directory(
     counters: &AtomicCounters,
     app: &tauri::AppHandle,
     progress_counter: &mut u32,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(), CommandError> {
     let entries = match fs::read_dir(dir_path) {
         Ok(entries) => entries,
         Err(e) => {
             println!("Warning: Cannot read directory {:?}: {}", dir_path, e);
-            return Ok(());
+            return Err(CommandError::CannotReadDirectory(dir_path.to_string_lossy().to_string()));
         }
     };
     
     counters.folder_count.fetch_add(1, Ordering::Relaxed);
-    let mut folder_size = 0u64;
-    let mut folder_file_count = 0u32;
+    let mut current_folder_size = 0u64;
+    let mut current_folder_file_count = 0u32;
     
     for entry in entries {
         let entry = match entry {
@@ -431,8 +529,8 @@ fn scan_single_directory(
                     let file_size = metadata.len();
                     counters.files_analyzed.fetch_add(1, Ordering::Relaxed);
                     counters.total_size.fetch_add(file_size, Ordering::Relaxed);
-                    folder_size += file_size;
-                    folder_file_count += 1;
+                    current_folder_size += file_size;
+                    current_folder_file_count += 1;
                     
                     // Traitement du fichier
                     let extension = entry_path.extension()
@@ -469,7 +567,6 @@ fn scan_single_directory(
                             files_analyzed: total_files,
                             total_size,
                             current_path: dir_path.to_string_lossy().to_string(),
-                            progress: 0.0,
                         };
                         
                         if let Err(e) = app.emit("scan_progress", progress) {
@@ -478,22 +575,23 @@ fn scan_single_directory(
                     }
                 }
                 Err(e) => {
-                    println!("Warning: Cannot get metadata for file {:?}: {}", entry_path, e);
-                }
+                println!("Warning: Cannot get metadata for file {:?}: {}", entry_path, e);
+                return Err(CommandError::CannotGetMetadata(entry_path.to_string_lossy().to_string()));
+            }
             }
         }
     }
     
     // Ajouter le dossier aux résultats
-    if folder_size > 0 || folder_file_count > 0 {
+    if current_folder_size > 0 || current_folder_file_count > 0 {
         thread_folders.push(ScannedFolder {
             name: dir_path.file_name()
                 .unwrap_or_else(|| dir_path.as_os_str())
                 .to_string_lossy()
                 .to_string(),
             path: dir_path.clone(),
-            size: folder_size,
-            file_count: folder_file_count,
+            size: current_folder_size,
+            file_count: current_folder_file_count,
         });
     }
     
@@ -513,7 +611,7 @@ fn get_file_type(extension: &str) -> String {
 }
 
 #[tauri::command]
-fn get_scan_results(scan_results: State<'_, SharedScanResults>) -> Result<ScanData, String> {
+fn get_scan_results(scan_results: State<'_, SharedScanResults>) -> Result<ScanData, CommandError> {
     let results = scan_results.lock().unwrap();
     
     // Get disk space info (this would ideally use a proper disk space library)
@@ -536,7 +634,7 @@ fn get_scan_results(scan_results: State<'_, SharedScanResults>) -> Result<ScanDa
 }
 
 #[tauri::command]
-fn get_largest_files(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FileItem>, String> {
+fn get_largest_files(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FileItem>, CommandError> {
     let results = scan_results.lock().unwrap();
     
     let file_items: Vec<FileItem> = results.largest_files.iter()
@@ -557,7 +655,7 @@ fn get_largest_files(scan_results: State<'_, SharedScanResults>) -> Result<Vec<F
 }
 
 #[tauri::command]
-fn get_folders(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FolderItem>, String> {
+fn get_folders(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FolderItem>, CommandError> {
     let results = scan_results.lock().unwrap();
     let total_size = results.total_size as f32;
     
@@ -581,7 +679,7 @@ fn get_folders(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FolderI
 }
 
 #[tauri::command]
-fn get_all_folders(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FolderItem>, String> {
+fn get_all_folders(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FolderItem>, CommandError> {
     let results = scan_results.lock().unwrap();
     let total_size = results.total_size as f32;
     
@@ -605,24 +703,24 @@ fn get_all_folders(scan_results: State<'_, SharedScanResults>) -> Result<Vec<Fol
 }
 
 #[tauri::command]
-fn get_folder_files(folder_path: String) -> Result<Vec<FileItem>, String> {
+fn get_folder_files(folder_path: String) -> Result<Vec<FileItem>, CommandError> {
     use std::fs;
     
     // Lire directement le contenu du dossier
     let entries = fs::read_dir(&folder_path)
-        .map_err(|e| format!("Cannot read directory {}: {}", folder_path, e))?;
+        .map_err(|e| CommandError::CannotReadDirectory(format!("{}: {}", folder_path, e)))?;
     
     let mut files = Vec::new();
     let mut id = 1;
     
     for entry in entries {
-        let entry = entry.map_err(|e| format!("Error reading directory entry: {}", e))?;
+        let entry = entry.map_err(|e| CommandError::InternalError(format!("Error reading directory entry: {}", e)))?;
         let path = entry.path();
         
         // Filtrer seulement les fichiers (pas les dossiers)
         if path.is_file() {
             let metadata = entry.metadata()
-                .map_err(|e| format!("Cannot get metadata for file: {}", e))?;
+                .map_err(|e| CommandError::CannotGetMetadata(format!("Cannot get metadata for file: {}", e)))?;
             
             let file_name = path.file_name()
                 .and_then(|n| n.to_str())
@@ -660,7 +758,7 @@ fn get_folder_files(folder_path: String) -> Result<Vec<FileItem>, String> {
 }
 
 #[tauri::command]
-fn get_file_type_distribution(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FileTypeDistributionItem>, String> {
+fn get_file_type_distribution(scan_results: State<'_, SharedScanResults>) -> Result<Vec<FileTypeDistributionItem>, CommandError> {
     let results = scan_results.lock().unwrap();
     
     let colors = [
@@ -685,7 +783,7 @@ fn get_file_type_distribution(scan_results: State<'_, SharedScanResults>) -> Res
 }
 
 #[tauri::command]
-fn get_pie_chart_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<PieChartDataItem>, String> {
+fn get_pie_chart_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<PieChartDataItem>, CommandError> {
     let results = scan_results.lock().unwrap();
     
     let colors = [
@@ -711,7 +809,7 @@ fn get_pie_chart_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<
 }
 
 #[tauri::command]
-fn get_doughnut_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<PieChartDataItem>, String> {
+fn get_doughnut_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<PieChartDataItem>, CommandError> {
     let results = scan_results.lock().unwrap();
     
     let colors = [
@@ -749,7 +847,7 @@ fn get_doughnut_data(scan_results: State<'_, SharedScanResults>) -> Result<Vec<P
 }
 
 #[tauri::command]
-fn get_trend_data(period: Option<String>) -> Result<Vec<GrowthDataItem>, String> {
+fn get_trend_data(period: Option<String>) -> Result<Vec<GrowthDataItem>, CommandError> {
     let period = period.unwrap_or_else(|| "30D".to_string());
     
     match period.as_str() {
@@ -783,7 +881,7 @@ fn get_trend_data(period: Option<String>) -> Result<Vec<GrowthDataItem>, String>
 }
 
 #[tauri::command]
-fn get_growth_data() -> Result<Vec<GrowthDataItem>, String> {
+fn get_growth_data() -> Result<Vec<GrowthDataItem>, CommandError> {
     Ok(vec![
         GrowthDataItem { name: "Jan 2025".to_string(), value: 650 },
         GrowthDataItem { name: "Feb 2025".to_string(), value: 720 },
@@ -795,7 +893,7 @@ fn get_growth_data() -> Result<Vec<GrowthDataItem>, String> {
 }
 
 #[tauri::command]
-fn get_cleanup_suggestions() -> Result<Vec<CleanupSuggestionItem>, String> {
+fn get_cleanup_suggestions() -> Result<Vec<CleanupSuggestionItem>, CommandError> {
     Ok(vec![
         CleanupSuggestionItem { 
             cleanup_type: "Duplicate Files".to_string(), 
@@ -819,14 +917,14 @@ fn get_cleanup_suggestions() -> Result<Vec<CleanupSuggestionItem>, String> {
 }
 
 #[tauri::command]
-fn export_report() -> Result<(), String> {
+fn export_report() -> Result<(), CommandError> {
     println!("Exporting report...");
     // Placeholder for export functionality
     Ok(())
 }
 
 #[tauri::command]
-fn get_trash_info() -> Result<TrashInfo, String> {
+fn get_trash_info() -> Result<TrashInfo, CommandError> {
     // Mock trash info - in real implementation, this would check the system trash
     Ok(TrashInfo {
         size: 2400000000, // 2.4 GB
@@ -835,35 +933,35 @@ fn get_trash_info() -> Result<TrashInfo, String> {
 }
 
 #[tauri::command]
-fn empty_trash() -> Result<(), String> {
+fn empty_trash() -> Result<(), CommandError> {
     println!("Emptying trash...");
     // Placeholder for empty trash functionality
     Ok(())
 }
 
 #[tauri::command]
-fn delete_file(file_id: u32) -> Result<(), String> {
+fn delete_file(file_id: u32) -> Result<(), CommandError> {
     println!("Deleting file with ID: {}", file_id);
     // Placeholder for delete file functionality
     Ok(())
 }
 
 #[tauri::command]
-fn compress_files(file_ids: Vec<u32>) -> Result<(), String> {
+fn compress_files(file_ids: Vec<u32>) -> Result<(), CommandError> {
     println!("Compressing files with IDs: {:?}", file_ids);
     // Placeholder for compress files functionality
     Ok(())
 }
 
 #[tauri::command]
-fn move_to_cloud(file_ids: Vec<u32>) -> Result<(), String> {
+fn move_to_cloud(file_ids: Vec<u32>) -> Result<(), CommandError> {
     println!("Moving files to cloud with IDs: {:?}", file_ids);
     // Placeholder for move to cloud functionality
     Ok(())
 }
 
 #[tauri::command]
-fn clean_selected_items(items: Vec<CleanupSuggestionItem>) -> Result<(), String> {
+fn clean_selected_items(items: Vec<CleanupSuggestionItem>) -> Result<(), CommandError> {
     println!("Cleaning selected items: {:?}", items);
     // Placeholder for cleanup functionality
     Ok(())
@@ -899,4 +997,53 @@ fn main() {
         ])
         .run(tauri::generate_context!()) 
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_calculate_recursive_folder_data() {
+        // Define some mock files
+        let files = vec![
+            ScannedFile { name: "file1.txt".to_string(), path: PathBuf::from("/a/b/file1.txt"), size: 100, file_type: "Documents".to_string(), extension: "txt".to_string() },
+            ScannedFile { name: "file2.txt".to_string(), path: PathBuf::from("/a/b/file2.txt"), size: 200, file_type: "Documents".to_string(), extension: "txt".to_string() },
+            ScannedFile { name: "file3.txt".to_string(), path: PathBuf::from("/a/c/file3.txt"), size: 300, file_type: "Documents".to_string(), extension: "txt".to_string() },
+            ScannedFile { name: "file4.txt".to_string(), path: PathBuf::from("/a/file4.txt"), size: 400, file_type: "Documents".to_string(), extension: "txt".to_string() },
+            ScannedFile { name: "file5.txt".to_string(), path: PathBuf::from("/a/b/d/file5.txt"), size: 50, file_type: "Documents".to_string(), extension: "txt".to_string() },
+        ];
+
+        // Define some mock folders (direct sizes/counts, not recursive yet)
+        let folders = vec![
+            ScannedFolder { name: "b".to_string(), path: PathBuf::from("/a/b"), size: 300, file_count: 2 }, // files 1 & 2
+            ScannedFolder { name: "c".to_string(), path: PathBuf::from("/a/c"), size: 300, file_count: 1 }, // file 3
+            ScannedFolder { name: "a".to_string(), path: PathBuf::from("/a"), size: 400, file_count: 1 }, // file 4
+            ScannedFolder { name: "d".to_string(), path: PathBuf::from("/a/b/d"), size: 50, file_count: 1 }, // file 5
+        ];
+
+        let updated_folders = calculate_recursive_folder_data(folders);
+
+        // Assertions
+        // Folder /a/b/d should have size 50, count 1
+        let folder_d = updated_folders.iter().find(|f| f.path == PathBuf::from("/a/b/d")).unwrap();
+        assert_eq!(folder_d.size, 50);
+        assert_eq!(folder_d.file_count, 1);
+
+        // Folder /a/b should have size 350 (100+200+50), count 3 (2+1)
+        let folder_b = updated_folders.iter().find(|f| f.path == PathBuf::from("/a/b")).unwrap();
+        assert_eq!(folder_b.size, 350);
+        assert_eq!(folder_b.file_count, 3);
+
+        // Folder /a/c should have size 300, count 1
+        let folder_c = updated_folders.iter().find(|f| f.path == PathBuf::from("/a/c")).unwrap();
+        assert_eq!(folder_c.size, 300);
+        assert_eq!(folder_c.file_count, 1);
+
+        // Folder /a should have size 1050 (350+300+400), count 5 (3+1+1)
+        let folder_a = updated_folders.iter().find(|f| f.path == PathBuf::from("/a")).unwrap();
+        assert_eq!(folder_a.size, 1050);
+        assert_eq!(folder_a.file_count, 5);
+    }
 }

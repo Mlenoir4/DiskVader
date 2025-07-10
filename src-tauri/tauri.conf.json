@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Diskvader",
   "version": "0.1.0",
-  "identifier": "com.diskvader.app",
+  "identifier": "com.diskvader.DiskVader",
   "build": {
     "frontendDist": "../dist/public",
     "devUrl": "http://localhost:5173",
@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws:;"
     }
   },
   "bundle": {

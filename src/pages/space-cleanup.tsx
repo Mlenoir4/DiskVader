@@ -475,22 +475,6 @@ const SpaceCleanup = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => toggleAllCleanupItems(true)}
-              disabled={allCleanupSuggestions.length === 0}
-            >
-              Select All
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => toggleAllCleanupItems(false)}
-              disabled={allCleanupSuggestions.length === 0}
-            >
-              Deselect All
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
               onClick={() => setSelectedCleanupFilter(null)}
               disabled={!selectedCleanupFilter}
             >
