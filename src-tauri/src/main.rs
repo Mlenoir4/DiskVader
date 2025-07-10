@@ -79,13 +79,19 @@ struct GrowthDataItem {
     value: u32,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct CleanupSuggestionItem {
     #[serde(rename = "type")]
     cleanup_type: String,
     size: u64,
     count: u32,
     color_class: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct TrashInfo {
+    size: u64,
+    count: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -819,6 +825,50 @@ fn export_report() -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_trash_info() -> Result<TrashInfo, String> {
+    // Mock trash info - in real implementation, this would check the system trash
+    Ok(TrashInfo {
+        size: 2400000000, // 2.4 GB
+        count: 156,
+    })
+}
+
+#[tauri::command]
+fn empty_trash() -> Result<(), String> {
+    println!("Emptying trash...");
+    // Placeholder for empty trash functionality
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_file(file_id: u32) -> Result<(), String> {
+    println!("Deleting file with ID: {}", file_id);
+    // Placeholder for delete file functionality
+    Ok(())
+}
+
+#[tauri::command]
+fn compress_files(file_ids: Vec<u32>) -> Result<(), String> {
+    println!("Compressing files with IDs: {:?}", file_ids);
+    // Placeholder for compress files functionality
+    Ok(())
+}
+
+#[tauri::command]
+fn move_to_cloud(file_ids: Vec<u32>) -> Result<(), String> {
+    println!("Moving files to cloud with IDs: {:?}", file_ids);
+    // Placeholder for move to cloud functionality
+    Ok(())
+}
+
+#[tauri::command]
+fn clean_selected_items(items: Vec<CleanupSuggestionItem>) -> Result<(), String> {
+    println!("Cleaning selected items: {:?}", items);
+    // Placeholder for cleanup functionality
+    Ok(())
+}
+
 fn main() {
     let scan_results: SharedScanResults = Arc::new(Mutex::new(ScanResults::default()));
     
@@ -839,6 +889,12 @@ fn main() {
             get_trend_data,
             get_growth_data,
             get_cleanup_suggestions,
+            get_trash_info,
+            empty_trash,
+            delete_file,
+            compress_files,
+            move_to_cloud,
+            clean_selected_items,
             export_report,
         ])
         .run(tauri::generate_context!()) 
