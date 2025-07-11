@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, AtomicBool};
+use chrono::Utc;
 
 #[derive(Debug, thiserror::Error, Serialize)]
 pub enum CommandError {
@@ -164,6 +165,9 @@ pub struct ScanResults {
     pub all_folders: Vec<ScannedFolder>,
     pub file_type_distribution: HashMap<String, (u64, u32)>,
     pub cancellation_flag: Arc<AtomicBool>,
+    pub error_logger: ErrorLogger,
+    pub has_error: bool,
+    pub error_data: Option<ErrorData>,
 }
 
 impl Default for ScanResults {
@@ -179,6 +183,9 @@ impl Default for ScanResults {
             all_folders: Vec::new(),
             file_type_distribution: HashMap::new(),
             cancellation_flag: Arc::new(AtomicBool::new(false)),
+            error_logger: ErrorLogger::new(),
+            has_error: false,
+            error_data: None,
         }
     }
 }
@@ -224,3 +231,88 @@ pub struct ThreadScanResult {
 }
 
 pub type SharedScanResults = Arc<Mutex<ScanResults>>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorLog {
+    pub id: u32,
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+    pub path: Option<String>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorData {
+    pub error_code: String,
+    pub timestamp: String,
+    pub path: String,
+    pub files_scanned: u32,
+    pub data_analyzed: u64,
+    pub scan_duration: f32,
+    pub error_logs: Vec<ErrorLog>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ErrorLogger {
+    pub logs: Arc<Mutex<Vec<ErrorLog>>>,
+    pub current_id: Arc<AtomicU32>,
+}
+
+impl ErrorLogger {
+    pub fn new() -> Self {
+        Self {
+            logs: Arc::new(Mutex::new(Vec::new())),
+            current_id: Arc::new(AtomicU32::new(1)),
+        }
+    }
+    
+    pub fn log_info(&self, message: &str, path: Option<&str>) {
+        self.log("INFO", message, path, None);
+    }
+    
+    pub fn log_error(&self, message: &str, path: Option<&str>, error_code: Option<&str>) {
+        self.log("ERROR", message, path, error_code);
+    }
+    
+    pub fn log_warning(&self, message: &str, path: Option<&str>) {
+        self.log("WARN", message, path, None);
+    }
+    
+    fn log(&self, level: &str, message: &str, path: Option<&str>, error_code: Option<&str>) {
+        if let Ok(mut logs) = self.logs.lock() {
+            let id = self.current_id.fetch_add(1, Ordering::Relaxed);
+            let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            
+            logs.push(ErrorLog {
+                id,
+                timestamp,
+                level: level.to_string(),
+                message: message.to_string(),
+                path: path.map(|p| p.to_string()),
+                error_code: error_code.map(|c| c.to_string()),
+            });
+            
+            // Garder seulement les 1000 derniers logs
+            if logs.len() > 1000 {
+                let excess = logs.len() - 1000;
+                logs.drain(0..excess);
+            }
+        }
+    }
+    
+    pub fn get_logs(&self) -> Vec<ErrorLog> {
+        if let Ok(logs) = self.logs.lock() {
+            logs.clone()
+        } else {
+            Vec::new()
+        }
+    }
+    
+    pub fn clear_logs(&self) {
+        if let Ok(mut logs) = self.logs.lock() {
+            logs.clear();
+            self.current_id.store(1, Ordering::Relaxed);
+        }
+    }
+}

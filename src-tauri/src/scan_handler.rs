@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use sysinfo::{System, Disks};
 
-use crate::models::{CommandError, ScanProgress, ScanData, FileItem, FolderItem, FileTypeDistributionItem, PieChartDataItem, GrowthDataItem, ScannedFile, ScannedFolder, AtomicCounters, ThreadScanResult, SharedScanResults, ScanResults};
+use crate::models::{CommandError, ScanProgress, ScanData, FileItem, FolderItem, FileTypeDistributionItem, PieChartDataItem, GrowthDataItem, ScannedFile, ScannedFolder, AtomicCounters, ThreadScanResult, SharedScanResults, ScanResults, ErrorData, ErrorLog};
 
 #[tauri::command]
 pub async fn select_folder(app: AppHandle) -> Result<Option<String>, CommandError> {
@@ -38,6 +38,10 @@ pub async fn start_scan(app: AppHandle, path: String, scan_results: State<'_, Sh
         *results = ScanResults::default();
         results.scan_path = path.clone();
         results.cancellation_flag.store(false, Ordering::Relaxed);
+        
+        // Logger le début du scan
+        results.error_logger.log_info(&format!("Starting disk scan for path: {}", path), Some(&path));
+        
         results.cancellation_flag.clone()
     };
     
@@ -95,6 +99,8 @@ pub async fn start_scan(app: AppHandle, path: String, scan_results: State<'_, Sh
             
             {
                 let mut results = scan_results.lock().unwrap();
+                results.error_logger.log_info(&format!("Scan completed successfully: {} files, {} folders", total_files, total_folders), Some(&path));
+                
                 *results = ScanResults {
                     total_files,
                     total_folders,
@@ -106,6 +112,9 @@ pub async fn start_scan(app: AppHandle, path: String, scan_results: State<'_, Sh
                     all_folders: all_folders_recursive,
                     file_type_distribution: combined_file_type_distribution,
                     cancellation_flag: Arc::new(AtomicBool::new(false)),
+                    error_logger: results.error_logger.clone(),
+                    has_error: false,
+                    error_data: None,
                 };
             }
             
@@ -121,9 +130,30 @@ pub async fn start_scan(app: AppHandle, path: String, scan_results: State<'_, Sh
             Ok(())
         }
         Err(e) => {
+            let elapsed = start_time.elapsed().as_secs_f32();
+            let (files_scanned, data_analyzed, _) = counters.get_values();
+            
+            // Logger l'erreur et créer les données d'erreur
+            {
+                let mut results = scan_results.lock().unwrap();
+                results.error_logger.log_error(&format!("Scan terminated due to error: {}", e), Some(&path), Some("ERR_SCAN_FAILED"));
+                results.error_logger.log_info(&format!("Partial scan completed: {} files analyzed", files_scanned), None);
+                
+                results.has_error = true;
+                results.error_data = Some(ErrorData {
+                    error_code: "ERR_SCAN_FAILED".to_string(),
+                    timestamp: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    path: path.clone(),
+                    files_scanned,
+                    data_analyzed,
+                    scan_duration: elapsed,
+                    error_logs: results.error_logger.get_logs(),
+                });
+            }
+            
             let _ = app.emit("scan_progress", ScanProgress {
-                files_analyzed: 0,
-                total_size: 0,
+                files_analyzed: files_scanned,
+                total_size: data_analyzed,
                 folders_analyzed: 0,
                 current_path: "Scan failed!".to_string(),
                 progress_percentage: 0.0,
@@ -853,5 +883,67 @@ pub fn estimate_total_size_fast(path: &Path) -> u64 {
     }
     
     total_size.max(1_000_000) // Au moins 1MB
+}
+
+// Nouvelles fonctions pour la gestion des erreurs et logs
+
+#[tauri::command]
+pub fn get_error_logs(scan_results: State<'_, SharedScanResults>) -> Result<Vec<ErrorLog>, CommandError> {
+    let results = scan_results.lock().unwrap();
+    Ok(results.error_logger.get_logs())
+}
+
+#[tauri::command]
+pub fn get_error_data(scan_results: State<'_, SharedScanResults>) -> Result<Option<ErrorData>, CommandError> {
+    let results = scan_results.lock().unwrap();
+    Ok(results.error_data.clone())
+}
+
+#[tauri::command]
+pub fn clear_error_logs(scan_results: State<'_, SharedScanResults>) -> Result<(), CommandError> {
+    let results = scan_results.lock().unwrap();
+    results.error_logger.clear_logs();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn has_scan_error(scan_results: State<'_, SharedScanResults>) -> Result<bool, CommandError> {
+    let results = scan_results.lock().unwrap();
+    Ok(results.has_error)
+}
+
+#[tauri::command]
+pub fn simulate_scan_error(scan_results: State<'_, SharedScanResults>) -> Result<(), CommandError> {
+    println!("Simulating scan error for testing...");
+    
+    let start_time = std::time::Instant::now();
+    let elapsed = start_time.elapsed().as_secs_f32();
+    
+    // Créer des logs d'erreur de test
+    {
+        let mut results = scan_results.lock().unwrap();
+        results.error_logger.clear_logs();
+        
+        // Simuler différents types d'erreurs
+        results.error_logger.log_info("Starting test scan simulation", Some("/test/path"));
+        results.error_logger.log_warning("Test warning: Limited permissions detected", Some("/test/restricted"));
+        results.error_logger.log_error("Test error: Access denied to critical system files", Some("/test/system"), Some("ERR_ACCESS_DENIED"));
+        results.error_logger.log_error("Test error: Network drive unavailable", Some("/test/network"), Some("ERR_NETWORK"));
+        results.error_logger.log_info("Test scan simulation completed with errors", None);
+        
+        results.has_error = true;
+        results.error_data = Some(ErrorData {
+            error_code: "ERR_TEST_SIMULATION".to_string(),
+            timestamp: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            path: "/test/simulation/path".to_string(),
+            files_scanned: 1234,
+            data_analyzed: 567890123,
+            scan_duration: elapsed,
+            error_logs: results.error_logger.get_logs(),
+        });
+    }
+    
+    println!("Scan error simulation completed");
+    Ok(())
 }
 

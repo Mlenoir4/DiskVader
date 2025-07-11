@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { errorApi } from '../lib/error-api';
 
 export interface ScanData {
   total_files: number;
@@ -43,11 +44,13 @@ export interface ScanContextType {
   fileTypeDistribution: FileTypeDistribution[];
   isDataAvailable: boolean;
   lastScanTime: number | null;
+  hasError: boolean;
   
   setScanData: (data: ScanData) => void;
   setLargestFiles: (files: FileItem[]) => void;
   setFolders: (folders: FolderItem[]) => void;
   setFileTypeDistribution: (distribution: FileTypeDistribution[]) => void;
+  checkForErrors: () => Promise<void>;
   clearAllData: () => void;
   saveScanResults: (
     scanData: ScanData,
@@ -73,6 +76,7 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [folders, setFoldersState] = useState<FolderItem[]>([]);
   const [fileTypeDistribution, setFileTypeDistributionState] = useState<FileTypeDistribution[]>([]);
   const [lastScanTime, setLastScanTime] = useState<number | null>(null);
+  const [hasError, setHasError] = useState<boolean>(false);
 
   // Clés pour localStorage
   const STORAGE_KEYS = {
@@ -210,6 +214,18 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const checkForErrors = async () => {
+    try {
+      console.log('ScanContext: Checking for scan errors...');
+      const hasErrorResult = await errorApi.hasScanError();
+      setHasError(hasErrorResult);
+      console.log('ScanContext: Error check completed, hasError:', hasErrorResult);
+    } catch (error) {
+      console.error('ScanContext: Error checking for errors:', error);
+      setHasError(false);
+    }
+  };
+
   const isDataAvailable = scanData !== null && scanData.total_files > 0 && scanData.total_size > 0;
   
   // Debug log pour isDataAvailable
@@ -233,10 +249,12 @@ export const ScanProvider: React.FC<{ children: React.ReactNode }> = ({ children
     fileTypeDistribution,
     isDataAvailable,
     lastScanTime,
+    hasError,
     setScanData,
     setLargestFiles,
     setFolders,
     setFileTypeDistribution,
+    checkForErrors,
     clearAllData,
     saveScanResults
   };

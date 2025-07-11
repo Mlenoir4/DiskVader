@@ -28,3 +28,4 @@ tauri-plugin-dialog = "2"
 thiserror = "1.0"
 sysinfo = "0.30"
 trash = "3.0"
+chrono = { version = "0.4", features = ["serde"] }
