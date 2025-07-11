@@ -214,13 +214,6 @@ impl AtomicCounters {
             *current_path = path.to_string();
         }
     }
-    
-    pub fn get_current_path(&self) -> String {
-        match self.current_path.lock() {
-            Ok(path) => path.clone(),
-            Err(_) => String::new(),
-        }
-    }
 }
 
 #[derive(Debug)]

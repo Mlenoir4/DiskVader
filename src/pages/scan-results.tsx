@@ -106,12 +106,13 @@ const ScanResults = () => {
           message: 'Data has been refreshed successfully.'
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error rescanning:", error);
+      const errorMessage = error.message || 'Failed to rescan. Please try again.';
       addToast({
         type: 'error',
         title: 'Rescan Failed',
-        message: 'Failed to rescan. Please try again.'
+        message: errorMessage
       });
     } finally {
       setRescanning(false);
@@ -457,8 +458,13 @@ const AllFilesModal = ({
       console.log(`Final result: ${sortedAndLimited.length} files (from ${uniqueFiles.length} unique, ${allFilesData.length} total)`);
       setAllFiles(sortedAndLimited);
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading files:', error);
+      addToast({
+        type: 'error',
+        title: 'File Loading Failed',
+        message: error.message || 'Failed to load all files.'
+      });
       // Dernier recours
       setAllFiles(files?.slice(0, 100) || []);
     } finally {

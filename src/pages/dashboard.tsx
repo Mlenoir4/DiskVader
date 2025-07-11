@@ -7,6 +7,7 @@ import { useToast } from "../components/ui/toast-provider";
 import { useScanContext } from "../contexts/scan-context";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { homeDir } from "@tauri-apps/api/path";
 
 const Dashboard = () => {
   const [, setLocation] = useLocation();
@@ -14,6 +15,15 @@ const Dashboard = () => {
   const [scanStatus, setScanStatus] = useState({
     filesAnalyzed: 0,
     totalSize: 0,
+    foldersAnalyzed: 0,
+    currentPath: '',
+    progress: 0,
+    isActive: false
+  });
+  const [displayStats, setDisplayStats] = useState({
+    filesAnalyzed: 0,
+    totalSize: 0,
+    foldersAnalyzed: 0,
     currentPath: '',
     progress: 0
   });
@@ -32,15 +42,57 @@ const Dashboard = () => {
     });
   }, [isDataAvailable, scanData, lastScanTime]);
 
+  // Debug log pour les stats en temps réel
+  useEffect(() => {
+    console.log('📊 [DISPLAY] Stats updated:', {
+      isScanning,
+      displayStats: {
+        filesAnalyzed: displayStats.filesAnalyzed,
+        foldersAnalyzed: displayStats.foldersAnalyzed,
+        totalSize: displayStats.totalSize,
+        progress: displayStats.progress.toFixed(1) + '%',
+        currentPath: displayStats.currentPath
+      }
+    });
+  }, [displayStats, isScanning]);
+
   useEffect(() => {
     const unlisten = listen('scan_progress', (event) => {
       const payload = event.payload as any;
-      // Utiliser directement les propriétés en camelCase du backend
-      setScanStatus({
-        filesAnalyzed: payload?.filesAnalyzed || 0,
-        totalSize: payload?.totalSize || 0,
-        currentPath: payload?.currentPath || '',
-        progress: payload?.progress || 0
+      console.log('🔄 [REAL-TIME] Scan progress received:', {
+        filesAnalyzed: payload?.filesAnalyzed,
+        totalSize: payload?.totalSize,
+        foldersAnalyzed: payload?.foldersAnalyzed,
+        currentPath: payload?.currentPath,
+        progressPercentage: payload?.progressPercentage,
+        estimatedTotalSize: payload?.estimatedTotalSize,
+        timestamp: new Date().toLocaleTimeString()
+      });
+      
+      const filesAnalyzed = payload?.filesAnalyzed || 0;
+      const foldersAnalyzed = payload?.foldersAnalyzed || 0;
+      const totalSize = payload?.totalSize || 0;
+      const currentPath = payload?.currentPath || '';
+      const progressPercentage = payload?.progressPercentage || 0;
+      
+      const newScanStatus = {
+        filesAnalyzed,
+        totalSize,
+        foldersAnalyzed,
+        currentPath,
+        progress: progressPercentage,
+        isActive: true
+      };
+      
+      setScanStatus(newScanStatus);
+      
+      // Mettre à jour IMMEDIATEMENT les stats d'affichage
+      setDisplayStats({
+        filesAnalyzed,
+        totalSize,
+        foldersAnalyzed,
+        currentPath,
+        progress: progressPercentage
       });
     });
     return () => {
@@ -48,22 +100,34 @@ const Dashboard = () => {
     };
   }, []);
 
+  // Animation fluide pour les stats affichées - SUPPRIMÉ pour affichage immédiat
+
   const handleScanEntireDisk = async () => {
     try {
+      const homePath = await homeDir();
+      if (!homePath) {
+        addToast({
+          type: 'error',
+          title: 'Scan Failed',
+          message: 'Could not determine the home directory.'
+        });
+        return;
+      }
+
       setIsScanning(true);
-      setScanStatus({ filesAnalyzed: 0, totalSize: 0, currentPath: '', progress: 0 });
+      setScanStatus({ filesAnalyzed: 0, totalSize: 0, foldersAnalyzed: 0, currentPath: '', progress: 0, isActive: true });
+      setDisplayStats({ filesAnalyzed: 0, totalSize: 0, foldersAnalyzed: 0, currentPath: '', progress: 0 });
       
-      // Nettoyer les données précédentes avant le nouveau scan
       clearAllData();
       
-      console.log('Starting disk scan...');
-      await invoke("start_scan", { path: "/" });
+      console.log(`Starting disk scan on home directory: ${homePath}`);
+      await invoke("start_scan", { path: homePath });
       console.log('Disk scan completed, fetching results...');
       
-      // Récupérer et sauvegarder les résultats du scan
       await fetchAndSaveScanResults();
       
       setIsScanning(false);
+      setScanStatus(prev => ({ ...prev, isActive: false }));
       
       addToast({
         type: 'success',
@@ -71,13 +135,15 @@ const Dashboard = () => {
         message: 'Disk scan has been completed successfully.'
       });
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error scanning disk:', error);
       setIsScanning(false);
+      setScanStatus(prev => ({ ...prev, isActive: false }));
+      const errorMessage = error.message || 'Failed to scan the disk. Please try again.';
       addToast({
         type: 'error',
         title: 'Scan Failed',
-        message: 'Failed to scan the disk. Please try again.'
+        message: errorMessage
       });
     }
   };
@@ -87,7 +153,8 @@ const Dashboard = () => {
       const result = await invoke("select_folder");
       if (result) {
         setIsScanning(true);  
-        setScanStatus({ filesAnalyzed: 0, totalSize: 0, currentPath: '', progress: 0 });
+        setScanStatus({ filesAnalyzed: 0, totalSize: 0, foldersAnalyzed: 0, currentPath: '', progress: 0, isActive: true });
+        setDisplayStats({ filesAnalyzed: 0, totalSize: 0, foldersAnalyzed: 0, currentPath: '', progress: 0 });
         
         // Nettoyer les données précédentes avant le nouveau scan
         clearAllData();
@@ -100,6 +167,7 @@ const Dashboard = () => {
         await fetchAndSaveScanResults();
         
         setIsScanning(false);
+        setScanStatus(prev => ({ ...prev, isActive: false }));
         
         addToast({
           type: 'success',
@@ -111,6 +179,7 @@ const Dashboard = () => {
     } catch (error) {
       console.error('Error scanning folder:', error);
       setIsScanning(false);
+      setScanStatus(prev => ({ ...prev, isActive: false }));
       addToast({
         type: 'error',
         title: 'Scan Failed',
@@ -183,8 +252,53 @@ const Dashboard = () => {
     }
   };
 
+  const handleCancelScan = async () => {
+    try {
+      await invoke("cancel_scan");
+      setIsScanning(false);
+      setScanStatus(prev => ({ ...prev, isActive: false }));
+      setDisplayStats(prev => ({ ...prev, progress: 0 }));
+      addToast({
+        type: 'info',
+        title: 'Scan Cancelled',
+        message: 'The disk scan has been cancelled.'
+      });
+    } catch (error: any) {
+      console.error('Error cancelling scan:', error);
+      addToast({
+        type: 'error',
+        title: 'Cancellation Failed',
+        message: error.message || 'Failed to cancel the scan.'
+      });
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto px-6 py-12">
+      {/* Styles CSS pour les animations */}
+      <style dangerouslySetInnerHTML={{
+        __html: `
+          @keyframes wave {
+            0% { transform: translateX(-100%); }
+            50% { transform: translateX(100%); }
+            100% { transform: translateX(100%); }
+          }
+          
+          @keyframes countUp {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          
+          .animate-countUp {
+            animation: countUp 0.3s ease-out;
+          }
+          
+          .wave-animation {
+            animation: wave 2s ease-in-out infinite;
+          }
+        `
+      }} />
+      
       {/* Hero Section */}
       <div className="text-center mb-12">
         <h1 className="text-4xl font-bold text-gray-900 mb-4">Analyze Disk Space</h1>
@@ -226,7 +340,6 @@ const Dashboard = () => {
           disabled={isScanning}
           className="bg-black text-white px-6 py-3 rounded-lg font-medium hover:bg-gray-800 transition-colors"
         >
-          <Search className="w-4 h-4 mr-2" />
           {isScanning ? 'Scanning...' : 'Scan Entire Disk'}
         </Button>
         <Button
@@ -236,7 +349,7 @@ const Dashboard = () => {
           className="bg-gray-100 text-gray-700 px-6 py-3 rounded-lg font-medium hover:bg-gray-200 transition-colors"
         >
           <Folder className="w-4 h-4 mr-2" />
-          Choose Folder
+          {isScanning ? 'Scanning...' : 'Choose Folder'}
         </Button>
       </div>
 
@@ -262,25 +375,49 @@ const Dashboard = () => {
             {/* Barre de progression */}
             {isScanning && (
               <div className="mb-6">
-                <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+                <div className="w-full bg-gray-200 rounded-full h-3 mb-2 overflow-hidden">
                   <div 
-                    className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${scanStatus.progress || 0}%` }}
-                  />
+                    className="bg-gradient-to-r from-blue-500 to-blue-600 h-3 rounded-full relative"
+                    style={{ 
+                      width: `${displayStats.progress || 0}%`,
+                      transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+                    }}
+                  >
+                    {/* Animation de brillance */}
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-pulse"></div>
+                    {/* Effet de vague */}
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-blue-300 to-transparent opacity-20 wave-animation"
+                         style={{ 
+                           transform: 'translateX(-100%)'
+                         }}></div>
+                  </div>
                 </div>
-                <div className="text-sm text-gray-500 text-center">
-                  {scanStatus.progress ? `${scanStatus.progress.toFixed(1)}% complete` : 'Initializing scan...'}
+                <div className="text-sm text-gray-500 text-center mb-4">
+                  {displayStats.progress ? `${displayStats.progress.toFixed(1)}% complete` : 'Initializing scan...'}
+                  {(displayStats.filesAnalyzed > 0 || displayStats.foldersAnalyzed > 0) && (
+                    <span className="ml-2 text-blue-600 font-medium">
+                      ({displayStats.filesAnalyzed.toLocaleString()} files, {displayStats.foldersAnalyzed.toLocaleString()} folders processed)
+                    </span>
+                  )}
                 </div>
+                <Button
+                  onClick={handleCancelScan}
+                  variant="outline"
+                  size="sm"
+                  className="text-red-600 hover:bg-red-50 border-red-300"
+                >
+                  Cancel Scan
+                </Button>
               </div>
             )}
             
-            <div className="flex justify-center space-x-8 text-sm text-gray-500">
+            <div className="flex justify-center space-x-8 text-sm text-gray-500 mb-4">
               <div className="flex items-center space-x-2">
                 <FileText className="w-4 h-4 text-gray-400" />
                 <span>
-                  Files Analyzed: <span className="font-medium">
+                  Files: <span className="font-medium animate-countUp">
                     {isScanning 
-                      ? (scanStatus?.filesAnalyzed || 0).toLocaleString()
+                      ? displayStats.filesAnalyzed.toLocaleString()
                       : isDataAvailable && scanData
                         ? (scanData.total_files || 0).toLocaleString()
                         : '0'
@@ -289,11 +426,24 @@ const Dashboard = () => {
                 </span>
               </div>
               <div className="flex items-center space-x-2">
+                <Folder className="w-4 h-4 text-gray-400" />
+                <span>
+                  Folders: <span className="font-medium animate-countUp">
+                    {isScanning 
+                      ? displayStats.foldersAnalyzed.toLocaleString()
+                      : isDataAvailable && scanData
+                        ? (scanData.total_folders || 0).toLocaleString()
+                        : '0'
+                    }
+                  </span>
+                </span>
+              </div>
+              <div className="flex items-center space-x-2">
                 <Database className="w-4 h-4 text-gray-400" />
                 <span>
-                  Total Size: <span className="font-medium">
+                  Size: <span className="font-medium animate-countUp">
                     {isScanning 
-                      ? formatSize(scanStatus?.totalSize || 0)
+                      ? formatSize(displayStats.totalSize)
                       : isDataAvailable && scanData
                         ? formatSize(scanData.total_size || 0)
                         : '0 bytes'
@@ -301,28 +451,47 @@ const Dashboard = () => {
                   </span>
                 </span>
               </div>
-              {isScanning && scanStatus.currentPath ? (
-                <div className="flex items-center space-x-2">
-                  <HardDrive className="w-4 h-4 text-blue-400" />
-                  <span className="text-blue-600 font-medium">
-                    Scanning...
-                  </span>
-                </div>
-              ) : isDataAvailable && scanData ? (
-                <div className="flex items-center space-x-2">
-                  <HardDrive className="w-4 h-4 text-green-400" />
-                  <span className="text-green-600 font-medium">
-                    Data Available
-                  </span>
-                </div>
-              ) : null}
+              <div className="flex items-center space-x-2">
+                {isScanning && scanStatus.isActive ? (
+                  <>
+                    <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
+                    <span className="text-blue-600 font-medium">
+                      Scanning...
+                    </span>
+                  </>
+                ) : isDataAvailable && scanData ? (
+                  <>
+                    <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                    <span className="text-green-600 font-medium">
+                      Ready
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-3 h-3 bg-gray-400 rounded-full"></div>
+                    <span className="text-gray-500 font-medium">
+                      Idle
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
             
             {/* Informations supplémentaires pendant le scan */}
-            {isScanning && scanStatus.currentPath && (
-              <div className="mt-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                <div className="text-xs text-blue-700 truncate">
-                  📂 {scanStatus.currentPath}
+            {isScanning && displayStats.currentPath && (
+              <div className="mt-4 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200 transition-all duration-300">
+                <div className="flex items-center space-x-3">
+                  <div className="w-3 h-3 bg-blue-500 rounded-full animate-pulse"></div>
+                  <div className="flex-1">
+                    <div className="text-xs text-blue-600 font-medium mb-1">Currently scanning:</div>
+                    <div className="text-sm text-blue-800 font-mono break-all transition-all duration-300">
+                      {displayStats.currentPath}
+                    </div>
+                  </div>
+                </div>
+                {/* Barre de progression secondaire pour le chemin */}
+                <div className="mt-2 w-full bg-blue-200 rounded-full h-1 overflow-hidden">
+                  <div className="h-1 bg-blue-500 rounded-full animate-pulse" style={{ width: '100%' }}></div>
                 </div>
               </div>
             )}

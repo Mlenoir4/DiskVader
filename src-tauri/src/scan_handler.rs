@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use sysinfo::{System, Disks};
-use std::thread;
 
 use crate::models::{CommandError, ScanProgress, ScanData, FileItem, FolderItem, FileTypeDistributionItem, PieChartDataItem, GrowthDataItem, ScannedFile, ScannedFolder, AtomicCounters, ThreadScanResult, SharedScanResults, ScanResults};
 
@@ -44,15 +43,8 @@ pub async fn start_scan(app: AppHandle, path: String, scan_results: State<'_, Sh
     
     let start_time = Instant::now();
     
-    println!("Collecting all directories for progress calculation...");
-    let mut all_directories = Vec::new();
-    if let Err(e) = collect_directories(scan_path, &mut all_directories, &cancellation_flag) {
-        return Err(e);
-    }
-    let total_dirs_to_scan = all_directories.len() as u32;
-    println!("Found {} directories to scan.", total_dirs_to_scan);
-    
-    let estimated_total_size = estimate_total_size(scan_path);
+    // Estimation rapide sans double traversée
+    let estimated_total_size = estimate_total_size_fast(scan_path);
     println!("Estimated total size: {:.2} GB", estimated_total_size as f64 / 1_000_000_000.0);
     
     let counters = AtomicCounters::new();
@@ -66,13 +58,12 @@ pub async fn start_scan(app: AppHandle, path: String, scan_results: State<'_, Sh
         estimated_total_size,
     });
     
-    let result = match scan_directory_multithreaded(
+    let result = match scan_directory_optimized(
         &app,
         scan_path,
         counters.clone(),
         cancellation_flag,
         estimated_total_size,
-        total_dirs_to_scan,
     ).await {
         Ok(thread_results) => {
             let elapsed = start_time.elapsed().as_secs_f32();
@@ -280,51 +271,19 @@ pub fn get_folder_files(folder_path: String) -> Result<Vec<FileItem>, CommandErr
                 .unwrap_or("")
                 .to_lowercase();
             
-            let file_type = get_file_type(&extension);
+            let file_type = get_file_type(&file_extension);
+            let file_size = metadata.len();
             
-            let counter = file_type_distribution.entry(file_type.clone()).or_insert((0, 0));
-            counter.0 += file_size;
-            counter.1 += 1;
+            files.push(FileItem {
+                id,
+                name: file_name,
+                path: path.to_string_lossy().to_string(),
+                size: file_size,
+                file_type,
+                extension: file_extension,
+            });
             
-            if file_size > 10_000 {
-                thread_files.push(ScannedFile {
-                            name: entry_path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                            path: entry_path.clone(),
-                            size: file_size,
-                            file_type,
-                            extension,
-                        });
-                    }
-                    
-                    let (total_files, total_size, total_folders) = counters.get_values();
-                    
-                    let progress_percentage = if estimated_total_size > 0 {
-                        (total_folders as f64 / total_dirs_to_scan as f64 * 100.0).min(99.9)
-                    } else {
-                        0.0
-                    };
-                    
-                    let progress = ScanProgress {
-                        files_analyzed: total_files,
-                        total_size,
-                        folders_analyzed: total_folders,
-                        current_path: dir_path.to_string_lossy().to_string(),
-                        progress_percentage,
-                        estimated_total_size,
-                    };
-                    
-                    if let Err(e) = app.emit("scan_progress", progress) {
-                        println!("Warning: Failed to emit progress: {}", e);
-                    }
-                }
-                Err(e) => {
-                    println!("Warning: Cannot get metadata for file {:?}: {}", entry_path, e);
-                    return Err(CommandError::CannotGetMetadata(entry_path.to_string_lossy().to_string()));
-                }
-            }
+            id += 1;
         }
     }
     
@@ -527,49 +486,56 @@ pub fn calculate_recursive_folder_data(
     updated_folders
 }
 
-pub async fn scan_directory_multithreaded(
+pub async fn scan_directory_optimized(
     app: &AppHandle,
     root_path: &Path,
     counters: AtomicCounters,
     cancellation_flag: Arc<AtomicBool>,
     estimated_total_size: u64,
-    total_dirs_to_scan: u32,
 ) -> Result<Vec<ThreadScanResult>, CommandError> {
-    println!("Distributing {} directories to scan among threads", total_dirs_to_scan);
-    
     let num_threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .min(total_dirs_to_scan.max(1) as usize);
+        .max(2)
+        .min(8); // Limiter à 8 threads max
     
-    println!("Using {} threads for scanning", num_threads);
+    println!("Using {} threads for optimized scanning", num_threads);
     
-    let mut all_directories = Vec::new();
-    collect_directories(root_path, &mut all_directories, &cancellation_flag)?;
-
-    let chunk_size = (all_directories.len() + num_threads - 1) / num_threads;
+    let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+    let rx = Arc::new(std::sync::Mutex::new(rx));
+    
+    // Thread producteur pour découvrir les répertoires
+    let producer_cancellation = Arc::clone(&cancellation_flag);
+    let root_path_clone = root_path.to_path_buf();
+    let producer_handle = std::thread::spawn(move || {
+        discover_directories_efficiently(&root_path_clone, &tx, &producer_cancellation);
+    });
+    
+    // Threads consommateurs
     let mut handles = Vec::new();
-    
-    for (thread_id, chunk) in all_directories.chunks(chunk_size).enumerate() {
-        let directories = chunk.to_vec();
+    for thread_id in 0..num_threads {
+        let rx_clone = Arc::clone(&rx);
         let counters = counters.clone();
         let app_clone = app.clone();
         let cancellation_flag_clone = Arc::clone(&cancellation_flag);
         
         let handle = std::thread::spawn(move || {
-            worker_thread_simple(
+            worker_thread_optimized(
                 thread_id,
-                directories,
+                rx_clone,
                 counters,
                 app_clone,
                 cancellation_flag_clone,
                 estimated_total_size,
-                total_dirs_to_scan,
             )
         });
         handles.push(handle);
     }
     
+    // Attendre le producteur
+    let _ = producer_handle.join();
+    
+    // Attendre tous les consommateurs
     let mut all_results = Vec::new();
     for handle in handles {
         match handle.join() {
@@ -578,70 +544,109 @@ pub async fn scan_directory_multithreaded(
         }
     }
     
-    println!("Collected results from {} thread(s)", all_results.len());
+    println!("Collected results from {} optimized thread(s)", all_results.len());
     Ok(all_results)
 }
 
-pub fn collect_directories(
-    root_path: &Path,
-    directories: &mut Vec<PathBuf>,
-    cancellation_flag: &Arc<AtomicBool>,
-) -> Result<(), CommandError> {
-    if cancellation_flag.load(Ordering::Relaxed) {
-        return Ok(());
+// Fonctions supprimées car remplacées par les versions optimisées
+
+// Ancienne fonction scan_single_directory supprimée car remplacée par scan_single_directory_optimized
+
+pub fn get_file_type(extension: &str) -> String {
+    match extension {
+        "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => "Video Files".to_string(),
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "svg" | "webp" | "raw" | "psd" => "Images".to_string(),
+        "pdf" | "doc" | "docx" | "txt" | "rtf" | "odt" | "pages" => "Documents".to_string(),
+        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" => "Archives".to_string(),
+        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" => "Audio Files".to_string(),
+        "exe" | "app" | "deb" | "rpm" | "dmg" | "msi" => "Applications".to_string(),
+        _ => "Other".to_string(),
     }
+}
+
+// Anciennes fonctions supprimées car remplacées par les versions optimisées
+
+// Nouvelles fonctions optimisées
+
+pub fn discover_directories_efficiently(
+    root_path: &PathBuf,
+    tx: &std::sync::mpsc::Sender<PathBuf>,
+    cancellation_flag: &Arc<AtomicBool>,
+) {
+    let mut stack = vec![root_path.clone()];
     
-    directories.push(root_path.to_path_buf());
-    
-    if let Ok(entries) = fs::read_dir(root_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_directories(&path, directories, cancellation_flag)?;
+    while let Some(current_path) = stack.pop() {
+        if cancellation_flag.load(Ordering::Relaxed) {
+            break;
+        }
+        
+        if let Err(_) = tx.send(current_path.clone()) {
+            break; // Canal fermé
+        }
+        
+        if let Ok(entries) = fs::read_dir(&current_path) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                }
             }
         }
     }
-    
-    Ok(())
 }
 
-pub fn worker_thread_simple(
+pub fn worker_thread_optimized(
     thread_id: usize,
-    directories: Vec<PathBuf>,
+    rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<PathBuf>>>,
     counters: AtomicCounters,
     app: AppHandle,
     cancellation_flag: Arc<AtomicBool>,
     estimated_total_size: u64,
-    total_dirs_to_scan: u32,
 ) -> ThreadScanResult {
-    println!("Worker thread {} started with {} directories", thread_id, directories.len());
+    println!("Optimized worker thread {} started", thread_id);
     
     let mut thread_files = Vec::new();
     let mut thread_folders = Vec::new();
     let mut thread_file_type_distribution: HashMap<String, (u64, u32)> = HashMap::new();
+    let mut files_processed_since_emit = 0u32;
+    let mut last_emit_percentage = 0.0f64;
     
-    for directory in directories {
+    // Réserver de l'espace pour éviter les réallocations
+    thread_files.reserve(1000);
+    thread_folders.reserve(100);
+    
+    loop {
         if cancellation_flag.load(Ordering::Relaxed) {
-            println!("Worker thread {} cancelled.", thread_id);
             break;
         }
         
-        if let Err(e) = scan_single_directory(
-            &directory,
-            &mut thread_files,
-            &mut thread_folders,
-            &mut thread_file_type_distribution,
-            &counters,
-            &app,
-            &cancellation_flag,
-            estimated_total_size,
-            total_dirs_to_scan,
-        ) {
-            println!("Thread {} error scanning {:?}: {}", thread_id, directory, e);
+        let directory = {
+            let receiver = rx.lock().unwrap();
+            receiver.recv()
+        };
+        
+        match directory {
+            Ok(dir_path) => {
+                if let Err(e) = scan_single_directory_optimized(
+                    &dir_path,
+                    &mut thread_files,
+                    &mut thread_folders,
+                    &mut thread_file_type_distribution,
+                    &counters,
+                    &app,
+                    &cancellation_flag,
+                    estimated_total_size,
+                    &mut files_processed_since_emit,
+                    &mut last_emit_percentage,
+                ) {
+                    println!("Thread {} error scanning {:?}: {}", thread_id, dir_path, e);
+                }
+            },
+            Err(_) => break, // Canal fermé, plus de répertoires
         }
     }
     
-    println!("Worker thread {} finished", thread_id);
+    println!("Optimized worker thread {} finished", thread_id);
     
     ThreadScanResult {
         files: thread_files,
@@ -650,7 +655,7 @@ pub fn worker_thread_simple(
     }
 }
 
-pub fn scan_single_directory(
+pub fn scan_single_directory_optimized(
     dir_path: &PathBuf,
     thread_files: &mut Vec<ScannedFile>,
     thread_folders: &mut Vec<ScannedFolder>,
@@ -659,7 +664,8 @@ pub fn scan_single_directory(
     app: &AppHandle,
     cancellation_flag: &AtomicBool,
     estimated_total_size: u64,
-    total_dirs_to_scan: u32,
+    files_processed_since_emit: &mut u32,
+    last_emit_percentage: &mut f64,
 ) -> Result<(), CommandError> {
     if cancellation_flag.load(Ordering::Relaxed) {
         return Ok(());
@@ -667,113 +673,91 @@ pub fn scan_single_directory(
 
     let entries = match fs::read_dir(dir_path) {
         Ok(entries) => entries,
-        Err(e) => {
-            println!("Warning: Cannot read directory {:?}: {}", dir_path, e);
-            return Err(CommandError::CannotReadDirectory(dir_path.to_string_lossy().to_string()));
-        }
+        Err(_) => return Ok(()), // Ignorer silencieusement les erreurs de lecture
     };
     
     counters.folder_count.fetch_add(1, Ordering::Relaxed);
-    
     counters.update_current_path(&dir_path.to_string_lossy());
     
     let mut current_folder_size = 0u64;
     let mut current_folder_file_count = 0u32;
+    const MIN_FILE_SIZE_THRESHOLD: u64 = 100_000; // 100KB au lieu de 10KB
     
     for entry in entries {
         if cancellation_flag.load(Ordering::Relaxed) {
-            println!("Scan of {:?} cancelled during entry processing.", dir_path);
             return Ok(());
         }
 
         let entry = match entry {
             Ok(entry) => entry,
-            Err(e) => {
-                println!("Warning: Cannot read entry: {}", e);
-                continue;
-            }
+            Err(_) => continue, // Ignorer les erreurs d'entrée
         };
         
         let entry_path = entry.path();
         
         if entry_path.is_file() {
-            match entry.metadata() {
-                Ok(metadata) => {
-                    let file_size = metadata.len();
-                    counters.files_analyzed.fetch_add(1, Ordering::Relaxed);
-                    counters.total_size.fetch_add(file_size, Ordering::Relaxed);
-                    current_folder_size += file_size;
-                    current_folder_file_count += 1;
-                    
-                    let extension = entry_path.extension()
-                        .and_then(|ext| ext.to_str())
-                        .unwrap_or("")
-                        .to_lowercase();
-                    
-                    let file_type = get_file_type(&extension);
-                    
-                    let counter = file_type_distribution.entry(file_type.clone()).or_insert((0, 0));
-                    counter.0 += file_size;
-                    counter.1 += 1;
-                    
-                    if file_size > 10_000 {
-                        thread_files.push(ScannedFile {
-                            name: entry_path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                            path: entry_path.clone(),
-                            size: file_size,
-                            file_type,
-                            extension,
-                        });
-                    }
-                    
-                    // Emit progress based on total size analyzed
+            if let Ok(metadata) = entry.metadata() {
+                let file_size = metadata.len();
+                counters.files_analyzed.fetch_add(1, Ordering::Relaxed);
+                counters.total_size.fetch_add(file_size, Ordering::Relaxed);
+                current_folder_size += file_size;
+                current_folder_file_count += 1;
+                
+                let extension = entry_path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                
+                let file_type = get_file_type_cached(&extension);
+                
+                let counter = file_type_distribution.entry(file_type.clone()).or_insert((0, 0));
+                counter.0 += file_size;
+                counter.1 += 1;
+                
+                // Stocker seulement les fichiers significatifs
+                if file_size > MIN_FILE_SIZE_THRESHOLD {
+                    thread_files.push(ScannedFile {
+                        name: entry_path.file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                        path: entry_path,
+                        size: file_size,
+                        file_type,
+                        extension,
+                    });
+                }
+                
+                // Émission de progrès optimisée
+                *files_processed_since_emit += 1;
+                if *files_processed_since_emit >= 500 { // Réduire la fréquence d'émission
                     let (total_files, total_size, total_folders) = counters.get_values();
-                    
                     let progress_percentage = if estimated_total_size > 0 {
                         (total_size as f64 / estimated_total_size as f64 * 100.0).min(99.9)
                     } else {
                         0.0
                     };
                     
-                    let progress = ScanProgress {
-                        files_analyzed: total_files,
-                        total_size,
-                        folders_analyzed: total_folders,
-                        current_path: dir_path.to_string_lossy().to_string(),
-                        progress_percentage,
-                        estimated_total_size,
-                    };
-                    
-                    // Emit progress every 100 files or if a significant percentage change occurs
-                    // This helps smooth out the progress bar updates
-                    static mut LAST_EMIT_PERCENTAGE: f64 = 0.0;
-                    static mut FILES_PROCESSED_SINCE_LAST_EMIT: u32 = 0;
-                    const EMIT_FILE_THRESHOLD: u32 = 100;
-                    const EMIT_PERCENTAGE_THRESHOLD: f64 = 0.5;
-
-                    unsafe {
-                        FILES_PROCESSED_SINCE_LAST_EMIT += 1;
-                        if FILES_PROCESSED_SINCE_LAST_EMIT >= EMIT_FILE_THRESHOLD || (progress_percentage - LAST_EMIT_PERCENTAGE).abs() >= EMIT_PERCENTAGE_THRESHOLD {
-                            if let Err(e) = app.emit("scan_progress", progress) {
-                                println!("Warning: Failed to emit progress: {}", e);
-                            }
-                            LAST_EMIT_PERCENTAGE = progress_percentage;
-                            FILES_PROCESSED_SINCE_LAST_EMIT = 0;
-                        }
+                    if (progress_percentage - *last_emit_percentage).abs() >= 1.0 {
+                        let progress = ScanProgress {
+                            files_analyzed: total_files,
+                            total_size,
+                            folders_analyzed: total_folders,
+                            current_path: dir_path.to_string_lossy().to_string(),
+                            progress_percentage,
+                            estimated_total_size,
+                        };
+                        
+                        let _ = app.emit("scan_progress", progress);
+                        *last_emit_percentage = progress_percentage;
+                        *files_processed_since_emit = 0;
                     }
-                }
-                Err(e) => {
-                    println!("Warning: Cannot get metadata for file {:?}: {}", entry_path, e);
-                    return Err(CommandError::CannotGetMetadata(entry_path.to_string_lossy().to_string()));
                 }
             }
         }
     }
     
-    if current_folder_size > 0 || current_folder_file_count > 0 {
+    if current_folder_size > 0 {
         thread_folders.push(ScannedFolder {
             name: dir_path.file_name()
                 .unwrap_or_else(|| dir_path.as_os_str())
@@ -788,64 +772,86 @@ pub fn scan_single_directory(
     Ok(())
 }
 
-pub fn get_file_type(extension: &str) -> String {
-    match extension {
-        "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" | "m4v" => "Video Files".to_string(),
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "svg" | "webp" | "raw" | "psd" => "Images".to_string(),
-        "pdf" | "doc" | "docx" | "txt" | "rtf" | "odt" | "pages" => "Documents".to_string(),
-        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" => "Archives".to_string(),
-        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" => "Audio Files".to_string(),
-        "exe" | "app" | "deb" | "rpm" | "dmg" | "msi" => "Applications".to_string(),
-        _ => "Other".to_string(),
-    }
+// Cache pour les types de fichiers
+static FILE_TYPE_CACHE: std::sync::OnceLock<HashMap<String, String>> = std::sync::OnceLock::new();
+
+pub fn get_file_type_cached(extension: &str) -> String {
+    let cache = FILE_TYPE_CACHE.get_or_init(|| {
+        let mut map = HashMap::new();
+        // Video
+        for ext in ["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"] {
+            map.insert(ext.to_string(), "Video Files".to_string());
+        }
+        // Images
+        for ext in ["jpg", "jpeg", "png", "gif", "bmp", "tiff", "svg", "webp", "raw", "psd"] {
+            map.insert(ext.to_string(), "Images".to_string());
+        }
+        // Documents
+        for ext in ["pdf", "doc", "docx", "txt", "rtf", "odt", "pages"] {
+            map.insert(ext.to_string(), "Documents".to_string());
+        }
+        // Archives
+        for ext in ["zip", "rar", "7z", "tar", "gz", "bz2", "xz"] {
+            map.insert(ext.to_string(), "Archives".to_string());
+        }
+        // Audio
+        for ext in ["mp3", "wav", "flac", "aac", "ogg", "m4a", "wma"] {
+            map.insert(ext.to_string(), "Audio Files".to_string());
+        }
+        // Applications
+        for ext in ["exe", "app", "deb", "rpm", "dmg", "msi"] {
+            map.insert(ext.to_string(), "Applications".to_string());
+        }
+        map
+    });
+    
+    cache.get(extension).cloned().unwrap_or_else(|| "Other".to_string())
 }
 
-pub fn estimate_total_size(path: &Path) -> u64 {
-    let mut total_size = 0u64;
-    let mut file_count = 0u32;
+pub fn estimate_total_size_fast(path: &Path) -> u64 {
+    use std::collections::VecDeque;
     
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() { 
-            let entry_path = entry.path();
-            if entry_path.is_file() {
-                if let Ok(metadata) = entry.metadata() {
-                    total_size += metadata.len();
-                    file_count += 1;
+    let mut queue = VecDeque::new();
+    queue.push_back(path.to_path_buf());
+    
+    let mut total_size = 0u64;
+    let mut dirs_sampled = 0;
+    const MAX_DIRS_TO_SAMPLE: usize = 20;
+    
+    while let Some(current_path) = queue.pop_front() {
+        if dirs_sampled >= MAX_DIRS_TO_SAMPLE {
+            break;
+        }
+        
+        if let Ok(entries) = fs::read_dir(&current_path) {
+            let mut dir_size = 0u64;
+            let mut file_count = 0;
+            
+            for entry in entries.take(50) { // Échantillonner seulement 50 entrées
+                if let Ok(entry) = entry {
+                    let entry_path = entry.path();
+                    if entry_path.is_file() {
+                        if let Ok(metadata) = entry.metadata() {
+                            dir_size += metadata.len();
+                            file_count += 1;
+                        }
+                    } else if entry_path.is_dir() && queue.len() < 100 {
+                        queue.push_back(entry_path);
+                    }
                 }
             }
-            if entry_path.is_dir() {
-                total_size += estimate_directory_size_limited(&entry_path, 2); 
+            
+            // Extrapoler la taille basée sur l'échantillon
+            if file_count > 10 {
+                total_size += dir_size * 3; // Facteur d'extrapolation
+            } else {
+                total_size += dir_size;
             }
+            
+            dirs_sampled += 1;
         }
     }
     
-    if file_count < 50 {
-        total_size
-    } else {
-        let avg_file_size = if file_count > 0 { total_size / file_count as u64 } else { 0 };
-        let estimated_file_count = count_files_estimate(path);
-        avg_file_size * estimated_file_count as u64
-    }
-}
-
-pub fn estimate_directory_size_limited(path: &Path, max_depth: u32) -> u64 {
-    if max_depth == 0 {
-        return 0;
-    }
-    
-    let mut total_size = 0u64;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() { 
-            let entry_path = entry.path();
-            if entry_path.is_file() {
-                if let Ok(metadata) = entry.metadata() {
-                    total_size += metadata.len();
-                }
-            } else if entry_path.is_dir() {
-                total_size += estimate_directory_size_limited(&entry_path, max_depth - 1);
-            }
-        }
-    }
-    total_size
+    total_size.max(1_000_000) // Au moins 1MB
 }
 
